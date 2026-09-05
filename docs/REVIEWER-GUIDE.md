@@ -1,51 +1,52 @@
 # Reviewer Guide
 
-This guide will be expanded at each checkpoint with exact commands, credentials, API calls,
-and expected evidence.
+This guide demonstrates the implemented platform behavior with PowerShell commands.
 
-## Checkpoint 1
-
-Expected behavior:
-
-- The repository is a Java 21 Spring Boot project.
-- The application exposes `GET /api/platform`.
-- The traceability matrix exists and identifies incomplete requirements honestly.
-
-Validation command:
+## Validate
 
 ```powershell
 .\mvnw.cmd clean verify
 ```
 
-## Checkpoint 2
+Expected result: build success, 42 tests passing, Flyway migrations validated, and JaCoCo
+report generation.
 
-Expected behavior:
-
-- Flyway applies the durable workflow schema.
-- The persistence adapter can create and read workflows, revisions, tasks, artifacts, and
-  audit events.
-- Audit payloads redact common secret assignments while retaining an original payload hash.
-
-Validation command:
+## Start The App
 
 ```powershell
-.\mvnw.cmd clean verify
+docker rm -f agentic-postgres 2>$null
+
+docker run --name agentic-postgres `
+  -e POSTGRES_DB=agentic `
+  -e POSTGRES_USER=agentic `
+  -e POSTGRES_PASSWORD=agentic `
+  -p 5432:5432 `
+  -d postgres:16-alpine
 ```
 
-Expected test result for checkpoint 2: 4 tests, 0 failures, 0 errors, 0 skipped.
+```powershell
+$env:AGENTIC_DB_URL = "jdbc:postgresql://localhost:5432/agentic"
+$env:AGENTIC_DB_USERNAME = "agentic"
+$env:AGENTIC_DB_PASSWORD = "agentic"
+$env:AGENTIC_MODEL_PROVIDER = "deterministic"
+$env:AGENTIC_URL_REGION_PREFIX = "us"
+$env:AGENTIC_BLOCKED_HOSTS = "blocked.example"
 
-## Checkpoint 3
+.\mvnw.cmd spring-boot:run
+```
 
-Expected behavior:
+Health and discovery:
 
-- `GET /api/scenarios` and OpenAPI endpoints are public.
-- `POST /api/workflows` requires the `operator` Basic-auth user.
-- Change approval requires `change-approver`.
-- Release approval requires `release-approver`.
-- Invalid request bodies return RFC 9457 Problem Details with `code` and `correlationId`.
-- Workflow submission persists a workflow, revision 1, and audit event.
+```powershell
+Invoke-RestMethod http://localhost:8080/actuator/health
+Invoke-RestMethod http://localhost:8080/actuator/health/readiness
+Invoke-WebRequest http://localhost:8080/actuator/prometheus
+Invoke-RestMethod http://localhost:8080/v3/api-docs
+```
 
-Local credentials:
+Swagger UI: `http://localhost:8080/swagger-ui.html`
+
+## Credentials
 
 | Username | Password | Role |
 | -------- | -------- | ---- |
@@ -53,245 +54,211 @@ Local credentials:
 | `change-approver` | `change-pass` | `CHANGE_APPROVER` |
 | `release-approver` | `release-pass` | `RELEASE_APPROVER` |
 
-Example workflow submission:
+## URL Shortener
 
 ```powershell
+$created = Invoke-RestMethod `
+  -Uri http://localhost:8080/api/urls `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body (@{ url = "https://example.com/docs"; expiresAt = $null } | ConvertTo-Json)
+
+$code = $created.shortCode
+$created
+
+Invoke-WebRequest "http://localhost:8080/r/$code" -MaximumRedirection 0 -SkipHttpErrorCheck
+Invoke-RestMethod "http://localhost:8080/api/urls/$code"
+Invoke-RestMethod "http://localhost:8080/api/urls/$code/analytics"
+```
+
+Deactivate:
+
+```powershell
+Invoke-RestMethod `
+  -Uri "http://localhost:8080/api/urls/$code/deactivate" `
+  -Method Patch
+```
+
+Validation failures:
+
+```powershell
+Invoke-WebRequest `
+  -Uri http://localhost:8080/api/urls `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body (@{ url = "ftp://example.com/file" } | ConvertTo-Json) `
+  -SkipHttpErrorCheck
+
+Invoke-WebRequest `
+  -Uri http://localhost:8080/api/urls `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body (@{ url = "https://localhost/admin" } | ConvertTo-Json) `
+  -SkipHttpErrorCheck
+
+Invoke-WebRequest `
+  -Uri http://localhost:8080/api/urls `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body (@{ url = "https://blocked.example/page" } | ConvertTo-Json) `
+  -SkipHttpErrorCheck
+```
+
+## Agentic Workflow
+
+```powershell
+$operator = New-Object pscredential "operator",(ConvertTo-SecureString "operator-pass" -AsPlainText -Force)
+
 $body = @{
-  scenarioKey = "greenfield-url-shortener"
-  requirement = "Build a URL shortener with redirect analytics."
+  scenarioKey = "brownfield-analytics"
+  requirement = "Add URL creation API and redirect endpoint with PostgreSQL storage, rate limiting, blocked host validation, expiry, retention cleanup, and UTC daily analytics."
 } | ConvertTo-Json
 
-Invoke-RestMethod `
+$workflow = Invoke-RestMethod `
   -Uri http://localhost:8080/api/workflows `
   -Method Post `
-  -Credential (New-Object pscredential "operator",(ConvertTo-SecureString "operator-pass" -AsPlainText -Force)) `
+  -Credential $operator `
+  -Headers @{ "Idempotency-Key" = "reviewer-workflow-001" } `
   -ContentType "application/json" `
   -Body $body
+
+$workflowId = $workflow.id
+$workflow
 ```
 
-Expected test result for checkpoint 3: 10 tests, 0 failures, 0 errors, 0 skipped.
+Expected status: `AWAITING_RELEASE_APPROVAL`.
 
-## Checkpoint 4
-
-Expected behavior:
-
-- Application startup remains deterministic without `OPENAI_API_KEY`.
-- `agentic.model.provider=deterministic` is the default.
-- Deterministic and OpenAI providers share `ModelRequest` and `ModelResult`.
-- Model prompts are redacted before invocation.
-- Required structured fields are enforced after provider output.
-- Model input/output character bounds are enforced.
-- OpenAI Responses API calls use `POST /v1/responses`, bearer auth, configured model, and
-  bounded HTTP timeouts.
-
-Configuration:
+Inspect execution evidence:
 
 ```powershell
-$env:AGENTIC_MODEL_PROVIDER = "deterministic"
-$env:AGENTIC_MODEL_TIMEOUT = "PT20S"
-$env:AGENTIC_MODEL_MAX_INPUT_CHARS = "20000"
-$env:AGENTIC_MODEL_MAX_OUTPUT_CHARS = "20000"
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/tasks" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/artifacts" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/validation-attempts" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/audit-events" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/policies" -Credential $operator
 ```
 
-Optional OpenAI mode:
+Inspect generated artifacts:
 
 ```powershell
-$env:AGENTIC_MODEL_PROVIDER = "openai"
-$env:OPENAI_API_KEY = "<api-key>"
-$env:OPENAI_BASE_URL = "https://api.openai.com"
-$env:OPENAI_MODEL = "gpt-5.6-luna"
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/artifacts/normalized-requirement.json" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/artifacts/engineering-plan.json" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/artifacts/implementation-proposal.json" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/artifacts/test-proposal.json" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/artifacts/unified-diff.patch" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/artifacts/source-manifest.json" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/artifacts/engineering-outcome.json" -Credential $operator
 ```
 
-Expected test result for checkpoint 4: 16 tests, 0 failures, 0 errors, 0 skipped.
+## Idempotency
 
-## Checkpoint 5
+Run the same workflow submission again with the same `Idempotency-Key`. The response
+returns the original workflow ID. Change the requirement while keeping the same key to
+receive HTTP 409 Problem Details with code `CONFLICT`.
 
-Expected behavior:
-
-- Specialized agents produce typed outputs through the shared model abstraction.
-- The ambiguity agent blocks materially underspecified requirements without relying on a
-  scenario enum.
-- The planner emits executor tasks with dependencies, gates, retry policy, and parallel
-  work groups.
-- Implementation, testing, and repair agents emit structured file-operation proposals.
-- Security/risk and release-readiness agents emit hash-linked governance artifacts.
-
-Validation command:
+## Exact Release Approval
 
 ```powershell
-.\mvnw.cmd clean verify
+$outcome = Invoke-RestMethod `
+  "http://localhost:8080/api/workflows/$workflowId/artifacts/engineering-outcome.json" `
+  -Credential $operator
+
+$releaseApprover = New-Object pscredential "release-approver",(ConvertTo-SecureString "release-pass" -AsPlainText -Force)
+
+Invoke-RestMethod `
+  -Uri "http://localhost:8080/api/workflows/$workflowId/approvals/release" `
+  -Method Post `
+  -Credential $releaseApprover `
+  -ContentType "application/json" `
+  -Body (@{ artifactHash = $outcome.sha256; reason = "Reviewed exact engineering outcome evidence." } | ConvertTo-Json)
+
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/approvals" -Credential $operator
 ```
 
-Representative tests:
+Expected status after approval: `COMPLETED`.
 
-- `SpecializedAgentTests.requirementAgentProducesValidatedRequirementArtifact`
-- `SpecializedAgentTests.ambiguityAgentBlocksMateriallyUnderspecifiedRequirement`
-- `SpecializedAgentTests.plannerProducesDynamicExecutionPlaneTasksWithDependenciesAndParallelBranches`
-- `SpecializedAgentTests.implementationAndTestAgentsProduceStructuredFileOperationProposals`
-
-## Checkpoint 6
-
-Expected behavior:
-
-- `POST /api/workflows` invokes the deterministic agent runner immediately.
-- Clear URL-shortener requirements produce durable task records, generated artifacts, and
-  audit events, ending in `AWAITING_RELEASE_APPROVAL`.
-- Ambiguous requirements produce requirement and ambiguity artifacts, then pause in
-  `AWAITING_CLARIFICATION` before implementation or test proposal generation.
-- Evidence is available through `tasks`, `artifacts`, artifact content, and audit APIs.
-
-Validation command:
+Invented hash rejection:
 
 ```powershell
-.\mvnw.cmd clean verify
+Invoke-WebRequest `
+  -Uri "http://localhost:8080/api/workflows/$workflowId/approvals/release" `
+  -Method Post `
+  -Credential $releaseApprover `
+  -ContentType "application/json" `
+  -Body (@{ artifactHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; reason = "wrong hash" } | ConvertTo-Json) `
+  -SkipHttpErrorCheck
 ```
 
-Expected test result for checkpoint 6: 24 tests, 0 failures, 0 errors, 0 skipped.
-
-## Checkpoint 7
-
-Expected behavior:
-
-- The implementation and test proposals are not ignored; they are read back from persisted
-  artifacts and applied in an isolated workspace.
-- Patch policy rejects unsafe paths, unsupported extensions, duplicate operations, content
-  over limits, and update/delete operations without expected hashes.
-- Successful workflows expose `patch-policy.json`, `applied-file-operations.json`,
-  `unified-diff.patch`, and `source-manifest.json`.
-- Audit events include `patch.applied` for successful policy-controlled mutation.
-
-Validation command:
+## Repair Demonstration
 
 ```powershell
-.\mvnw.cmd clean verify
-```
-
-Expected test result for checkpoint 7: 26 tests, 0 failures, 0 errors, 0 skipped.
-
-## Checkpoint 8
-
-Expected behavior:
-
-- Successful generated workspaces run a real fixed Maven Wrapper validation command.
-- Validation attempts persist exit code, duration, timeout flag, failure classification,
-  and bounded stdout/stderr.
-- `GET /api/workflows/{workflowId}/validation-attempts` exposes validation evidence.
-- The deterministic `repair-demonstration` scenario first fails compilation, invokes the
-  repair agent with actual validation evidence, applies a repaired proposal, and validates
-  successfully on the second attempt.
-
-Validation command:
-
-```powershell
-.\mvnw.cmd clean verify
-```
-
-Expected test result for checkpoint 8: 27 tests, 0 failures, 0 errors, 0 skipped.
-
-## Checkpoint 9
-
-Expected behavior:
-
-- `POST /api/urls` creates a persisted short URL.
-- `GET /r/{code}` returns `302 Found` with `Location` and records redirect analytics.
-- `GET /api/urls/{code}` returns inspection data including active state, expiry, and
-  redirect count.
-- `PATCH /api/urls/{code}/deactivate` disables future redirects.
-- Expired, unknown, malformed, unsupported-scheme, and user-info URLs return RFC 9457
-  Problem Details with stable error codes.
-- Flyway applies `V2__url_shortener_core.sql`.
-
-Validation command:
-
-```powershell
-.\mvnw.cmd clean verify
-```
-
-Expected test result for checkpoint 9: 32 tests, 0 failures, 0 errors, 0 skipped.
-
-## Checkpoint 10
-
-Expected behavior:
-
-- URL creation is rate-limited and returns HTTP 429 with `Retry-After`.
-- Short codes include the configured regional prefix.
-- Redirect analytics include total redirects and UTC daily counts.
-- Localhost, private IPs, configured blocked hosts, unsupported schemes, and user-info are
-  rejected.
-- Concurrent URL creation produces unique codes.
-- Cleanup can remove retained redirect events and inactive/expired URLs.
-
-Validation command:
-
-```powershell
-.\mvnw.cmd clean verify
-```
-
-Expected test result for checkpoint 10: 35 tests, 0 failures, 0 errors, 0 skipped.
-
-## Checkpoint 11
-
-Expected behavior:
-
-- `POST /api/workflows` accepts an `Idempotency-Key` header.
-- Replaying the same authenticated request and idempotency key returns the original
-  workflow instead of creating duplicate workflow state.
-- Reusing the same key with different request content returns HTTP 409 Problem Details
-  with code `CONFLICT`.
-- Workflow tasks have database-backed lease owner, lease expiry, and fencing-token state.
-- A task can be claimed only when unleased or expired.
-- Heartbeat and completion require the current lease owner and fencing token, so stale
-  workers cannot complete a task after losing ownership.
-- `GET /api/workflows/{workflowId}/tasks` exposes lease and fencing fields for reviewer
-  evidence.
-
-Example idempotent submission:
-
-```powershell
-$body = @{
-  scenarioKey = "greenfield-url-shortener"
-  requirement = "Build a URL shortener with redirect analytics."
+$repairBody = @{
+  scenarioKey = "repair-demonstration"
+  requirement = "repair scenario: Add URL creation API and redirect endpoint with PostgreSQL storage, rate limiting, blocked host validation, expiry, retention cleanup, and UTC daily analytics."
 } | ConvertTo-Json
 
-Invoke-RestMethod `
+$repair = Invoke-RestMethod `
   -Uri http://localhost:8080/api/workflows `
   -Method Post `
-  -Credential (New-Object pscredential "operator",(ConvertTo-SecureString "operator-pass" -AsPlainText -Force)) `
-  -Headers @{ "Idempotency-Key" = "reviewer-submit-001" } `
+  -Credential $operator `
   -ContentType "application/json" `
-  -Body $body
+  -Body $repairBody
+
+Invoke-RestMethod "http://localhost:8080/api/workflows/$($repair.id)/validation-attempts" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$($repair.id)/artifacts/repair-proposal.json" -Credential $operator
 ```
 
-Validation command:
+Expected evidence: two validation attempts, with the first failing and the second passing
+after repair.
+
+## Ambiguity Demonstration
 
 ```powershell
-.\mvnw.cmd clean verify
+$ambiguousBody = @{
+  scenarioKey = "ambiguous-requirement"
+  requirement = "Make links better."
+} | ConvertTo-Json
+
+$ambiguous = Invoke-RestMethod `
+  -Uri http://localhost:8080/api/workflows `
+  -Method Post `
+  -Credential $operator `
+  -ContentType "application/json" `
+  -Body $ambiguousBody
+
+Invoke-RestMethod "http://localhost:8080/api/workflows/$($ambiguous.id)" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$($ambiguous.id)/artifacts/ambiguity-decision.json" -Credential $operator
 ```
 
-Expected test result for checkpoint 11: 38 tests, 0 failures, 0 errors, 0 skipped.
+Expected status: `AWAITING_CLARIFICATION`. No patch artifacts are created for this
+revision.
 
-## Checkpoint 12
-
-Expected behavior:
-
-- Workflows expose canonical `engineering-plan.json` and `engineering-outcome.json`
-  artifacts.
-- Change approval requires the exact current `engineering-plan.json` hash.
-- Release approval requires the exact current `engineering-outcome.json` hash.
-- Invented or stale approval hashes return HTTP 409 Problem Details with code `CONFLICT`
-  and persist a rejected approval record.
-- Successful release approval persists an approval record and transitions the workflow to
-  `COMPLETED`.
-- `GET /api/workflows/{workflowId}/policies` exposes required gate artifact names and
-  current hashes.
-- `GET /actuator/prometheus` exposes bounded-label platform metrics.
-- `deploy/prometheus/agentic-recording-rules.yml` contains computed reliability
-  indicators instead of raw-counter-only claims.
-
-Validation command:
+## Docker Compose
 
 ```powershell
-.\mvnw.cmd clean verify
+.\mvnw.cmd clean package
+docker compose config
+docker compose up --build
 ```
 
-Expected test result for checkpoint 12: 42 tests, 0 failures, 0 errors, 0 skipped.
+Then check:
+
+```powershell
+Invoke-RestMethod http://localhost:8080/actuator/health
+Invoke-RestMethod http://localhost:8081/actuator/health
+Invoke-WebRequest http://localhost:8080/actuator/prometheus
+Invoke-WebRequest http://localhost:9090
+```
+
+## Cleanup
+
+```powershell
+docker compose down -v
+docker rm -f agentic-postgres 2>$null
+Remove-Item Env:\AGENTIC_DB_URL -ErrorAction SilentlyContinue
+Remove-Item Env:\AGENTIC_DB_USERNAME -ErrorAction SilentlyContinue
+Remove-Item Env:\AGENTIC_DB_PASSWORD -ErrorAction SilentlyContinue
+Remove-Item Env:\AGENTIC_MODEL_PROVIDER -ErrorAction SilentlyContinue
+Remove-Item Env:\OPENAI_API_KEY -ErrorAction SilentlyContinue
+```

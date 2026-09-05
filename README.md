@@ -1,61 +1,37 @@
-# Agentic-Proficient Software Engineer Platform
+# Agentic URL Shortener SDLC Platform
 
-This repository contains a Spring Boot based agentic SDLC orchestration platform for the
-Agentic-Proficient Software Engineer assessment. The platform will expose REST APIs that
-drive a requirement-to-code-to-test lifecycle against isolated repository workspaces, using
-a functional URL shortener as the concrete engineering target.
+This repository contains a runnable Java 21 Spring Boot platform for the Agentic-Proficient
+Software Engineer assessment. The platform exposes REST APIs that accept a software
+requirement, run deterministic or OpenAI-backed agents, generate implementation and test
+file-operation proposals, apply those proposals inside isolated workspaces, run real Maven
+validation, repair a deliberate failure scenario, expose review evidence, and require
+exact-hash human approval before release completion.
 
-The implementation is being developed in reviewable checkpoints. The assignment PDF is the
-authoritative requirements source; reviewer-approved projects are used only as quality
-references and are not copied.
+The concrete product slice is a URL shortener with PostgreSQL persistence, Flyway
+migrations, RFC 9457 errors, OpenAPI, health probes, Prometheus metrics, rate limiting,
+blocked-host/private-address validation, regional short codes, redirect analytics, and
+retention cleanup.
 
-## Current Checkpoint
+## Requirements
 
-Checkpoint 9 includes the runnable agentic workflow path plus the functional
-URL-shortener core: URL creation, redirect, inspection, deactivation, expiry, PostgreSQL
-persistence, Flyway migrations, validation, and RFC 9457 Problem Details.
+- Java 21
+- Docker Desktop
+- PowerShell on Windows
 
-## Local Development
-
-Java 21 is required.
+## Validate Locally
 
 ```powershell
 .\mvnw.cmd clean verify
 ```
 
-The default runtime profile expects PostgreSQL at
-`jdbc:postgresql://localhost:5432/agentic` with username/password `agentic`/`agentic`.
-Tests use an H2 database in PostgreSQL compatibility mode.
+Tests use H2 in PostgreSQL compatibility mode. Verification runs application, agent/model,
+repository sandbox, workflow API, URL-shortener, Flyway, Prometheus-rule, and JaCoCo checks.
 
-On Unix-like shells:
-
-```bash
-./mvnw clean verify
-```
-
-## Documentation
-
-- [Traceability](docs/TRACEABILITY.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Reviewer Guide](docs/REVIEWER-GUIDE.md)
-
-## Deterministic Local Roles
-
-Checkpoint 3 includes local Basic authentication for platform APIs:
-
-| Username | Password | Role |
-| -------- | -------- | ---- |
-| `operator` | `operator-pass` | `OPERATOR` |
-| `change-approver` | `change-pass` | `CHANGE_APPROVER` |
-| `release-approver` | `release-pass` | `RELEASE_APPROVER` |
-
-OpenAPI is available at `/v3/api-docs` and Swagger UI at `/swagger-ui.html`.
-
-## URL Shortener Quick Check
-
-Start PostgreSQL with Docker Desktop:
+## Run With Docker Desktop PostgreSQL
 
 ```powershell
+docker rm -f agentic-postgres 2>$null
+
 docker run --name agentic-postgres `
   -e POSTGRES_DB=agentic `
   -e POSTGRES_USER=agentic `
@@ -64,45 +40,151 @@ docker run --name agentic-postgres `
   -d postgres:16-alpine
 ```
 
-Run the app:
-
 ```powershell
 $env:AGENTIC_DB_URL = "jdbc:postgresql://localhost:5432/agentic"
 $env:AGENTIC_DB_USERNAME = "agentic"
 $env:AGENTIC_DB_PASSWORD = "agentic"
 $env:AGENTIC_MODEL_PROVIDER = "deterministic"
+$env:AGENTIC_URL_REGION_PREFIX = "us"
+$env:AGENTIC_BLOCKED_HOSTS = "blocked.example"
+
 .\mvnw.cmd spring-boot:run
 ```
 
-Create and inspect a short URL:
+Useful URLs:
+
+- `http://localhost:8080/actuator/health`
+- `http://localhost:8080/actuator/health/readiness`
+- `http://localhost:8080/actuator/prometheus`
+- `http://localhost:8080/v3/api-docs`
+- `http://localhost:8080/swagger-ui.html`
+
+## Run With Docker Compose
 
 ```powershell
-$created = Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/urls `
+.\mvnw.cmd clean package
+docker compose up --build
+```
+
+Services:
+
+- orchestrator A: `http://localhost:8080`
+- orchestrator B: `http://localhost:8081`
+- Prometheus: `http://localhost:9090`
+- PostgreSQL: `localhost:5432`
+
+## Local Credentials
+
+| Username | Password | Role |
+| -------- | -------- | ---- |
+| `operator` | `operator-pass` | `OPERATOR` |
+| `change-approver` | `change-pass` | `CHANGE_APPROVER` |
+| `release-approver` | `release-pass` | `RELEASE_APPROVER` |
+
+## URL Shortener Quick Check
+
+```powershell
+$created = Invoke-RestMethod `
+  -Uri http://localhost:8080/api/urls `
+  -Method Post `
   -ContentType "application/json" `
   -Body (@{ url = "https://example.com/docs"; expiresAt = $null } | ConvertTo-Json)
 
+$code = $created.shortCode
 $created
-Invoke-WebRequest -MaximumRedirection 0 -Uri "http://localhost:8080/r/$($created.shortCode)"
-Invoke-RestMethod -Uri "http://localhost:8080/api/urls/$($created.shortCode)"
-Invoke-RestMethod -Method Patch -Uri "http://localhost:8080/api/urls/$($created.shortCode)/deactivate"
+
+Invoke-WebRequest "http://localhost:8080/r/$code" -MaximumRedirection 0 -SkipHttpErrorCheck
+Invoke-RestMethod "http://localhost:8080/api/urls/$code"
+Invoke-RestMethod "http://localhost:8080/api/urls/$code/analytics"
 ```
 
-## Model Providers
-
-The default model provider is deterministic and requires no API key:
+## Agentic Workflow Quick Check
 
 ```powershell
-$env:AGENTIC_MODEL_PROVIDER = "deterministic"
+$operator = New-Object pscredential "operator",(ConvertTo-SecureString "operator-pass" -AsPlainText -Force)
+
+$body = @{
+  scenarioKey = "brownfield-analytics"
+  requirement = "Add URL creation API and redirect endpoint with PostgreSQL storage, rate limiting, blocked host validation, expiry, retention cleanup, and UTC daily analytics."
+} | ConvertTo-Json
+
+$workflow = Invoke-RestMethod `
+  -Uri http://localhost:8080/api/workflows `
+  -Method Post `
+  -Credential $operator `
+  -Headers @{ "Idempotency-Key" = "reviewer-workflow-001" } `
+  -ContentType "application/json" `
+  -Body $body
+
+$workflowId = $workflow.id
+$workflow
 ```
 
-Optional OpenAI Responses API mode is configured only through environment variables:
+Inspect evidence:
+
+```powershell
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/tasks" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/artifacts" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/validation-attempts" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/policies" -Credential $operator
+```
+
+Approve release with exact current evidence:
+
+```powershell
+$outcome = Invoke-RestMethod `
+  "http://localhost:8080/api/workflows/$workflowId/artifacts/engineering-outcome.json" `
+  -Credential $operator
+
+$releaseApprover = New-Object pscredential "release-approver",(ConvertTo-SecureString "release-pass" -AsPlainText -Force)
+
+Invoke-RestMethod `
+  -Uri "http://localhost:8080/api/workflows/$workflowId/approvals/release" `
+  -Method Post `
+  -Credential $releaseApprover `
+  -ContentType "application/json" `
+  -Body (@{ artifactHash = $outcome.sha256; reason = "Reviewed exact engineering outcome evidence." } | ConvertTo-Json)
+```
+
+## Generated Workflow Files
+
+Workflow execution writes generated files only inside an isolated workspace. Find the path:
+
+```powershell
+$applied = Invoke-RestMethod `
+  "http://localhost:8080/api/workflows/$workflowId/artifacts/applied-file-operations.json" `
+  -Credential $operator
+
+($applied.content | ConvertFrom-Json).workspacePath
+```
+
+Key evidence artifacts:
+
+- `implementation-proposal.json`
+- `test-proposal.json`
+- `unified-diff.patch`
+- `source-manifest.json`
+- `validation-attempt-1.json`
+- `repair-proposal.json` for the repair scenario
+- `engineering-plan.json`
+- `engineering-outcome.json`
+
+## Optional OpenAI Provider
 
 ```powershell
 $env:AGENTIC_MODEL_PROVIDER = "openai"
 $env:OPENAI_API_KEY = "<api-key>"
+$env:OPENAI_BASE_URL = "https://api.openai.com"
 $env:OPENAI_MODEL = "gpt-5.6-luna"
 ```
 
-Both providers use the same `ModelRequest` and `ModelResult` contracts. The platform
-redacts common secret assignments before model invocation and enforces bounded input and
-output sizes.
+The deterministic provider is the default and requires no API key. Both providers use the
+same structured model contracts, patch policy, repository mutation, validation, repair,
+evidence, and approval pipeline.
+
+## Limitations
+
+This assessment implementation demonstrates the lifecycle inside a runnable platform.
+Production identity-provider provisioning, certificate issuance, external secret
+management, DNS, global ingress limits, egress policy, and actual multi-region deployment
+remain operator responsibilities documented in `docs/PRODUCTION-DEPLOYMENT.md`.
