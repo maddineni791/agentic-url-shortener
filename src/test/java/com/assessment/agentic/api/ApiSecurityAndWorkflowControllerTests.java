@@ -42,13 +42,88 @@ class ApiSecurityAndWorkflowControllerTests {
                 .content("""
                     {
                       "scenarioKey": "greenfield-url-shortener",
-                      "requirement": "Build a URL shortener with redirect analytics."
+                      "requirement": "Build a URL shortener API with redirect endpoint, PostgreSQL persistence, rate limiting, blocked host validation, expiry, retention, and UTC analytics."
                     }
                     """))
             .andExpect(status().isCreated())
             .andExpect(jsonPath("$.scenarioKey").value("greenfield-url-shortener"))
-            .andExpect(jsonPath("$.status").value("SUBMITTED"))
+            .andExpect(jsonPath("$.status").value("AWAITING_RELEASE_APPROVAL"))
             .andExpect(jsonPath("$.currentRevision").value(1));
+    }
+
+    @Test
+    void submissionRunsAgentsAndExposesGeneratedEvidence() throws Exception {
+        String workflowJson = mockMvc.perform(post("/api/workflows")
+                .with(httpBasic("operator", "operator-pass"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "scenarioKey": "brownfield-analytics",
+                      "requirement": "Add URL creation API and redirect endpoint with PostgreSQL storage, rate limiting, blocked host validation, expiry, retention cleanup, and UTC daily analytics."
+                    }
+                    """))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("AWAITING_RELEASE_APPROVAL"))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+
+        String workflowId = workflowJson.replaceAll(".*\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+        mockMvc.perform(get("/api/workflows/" + workflowId + "/tasks")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.total").value(11))
+            .andExpect(jsonPath("$.items[0].status").value("SUCCEEDED"))
+            .andExpect(jsonPath("$.items[?(@.taskKey=='implement-change')].taskType").value("IMPLEMENTER"));
+
+        mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items[?(@.name=='normalized-requirement.json')].sha256").exists())
+            .andExpect(jsonPath("$.items[?(@.name=='implementation-proposal.json')].sha256").exists())
+            .andExpect(jsonPath("$.items[?(@.name=='release-readiness.json')].sha256").exists());
+
+        mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts/implementation-proposal.json")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.content").value(org.hamcrest.Matchers.containsString("fileOperations")));
+
+        mockMvc.perform(get("/api/workflows/" + workflowId + "/audit-events")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items[?(@.eventType=='task.completed')]").isNotEmpty())
+            .andExpect(jsonPath("$.items[?(@.eventType=='workflow.awaiting-release-approval')]").isNotEmpty());
+    }
+
+    @Test
+    void ambiguousSubmissionPausesForClarificationAndSkipsImplementation() throws Exception {
+        String workflowJson = mockMvc.perform(post("/api/workflows")
+                .with(httpBasic("operator", "operator-pass"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "scenarioKey": "ambiguous-requirement",
+                      "requirement": "Make links better."
+                    }
+                    """))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("AWAITING_CLARIFICATION"))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+
+        String workflowId = workflowJson.replaceAll(".*\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+        mockMvc.perform(get("/api/workflows/" + workflowId + "/tasks")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items", hasSize(2)))
+            .andExpect(jsonPath("$.items[?(@.taskKey=='analyze-ambiguity')].status").value("SUCCEEDED"));
+
+        mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items", hasSize(2)))
+            .andExpect(jsonPath("$.items[?(@.name=='ambiguity-decision.json')].sha256").exists());
     }
 
     @Test

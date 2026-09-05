@@ -114,3 +114,34 @@ source mutation is allowed.
 The `EngineeringTool` and `ArtifactValidator` interfaces are controlled extension points
 for bounded repository reads, patch application, validation, evidence checks, retry,
 fallback, and rollback.
+
+## Checkpoint 6 Durable Agent Runner
+
+Workflow submission now invokes the agent execution plane. `WorkflowOrchestrator` creates
+durable tasks, claims them, marks them running, invokes the matching specialized agent,
+persists generated artifacts, appends audit events, and advances workflow status based on
+observed agent output.
+
+The first branch is intentionally decisive:
+
+- every workflow runs `understand-requirement`;
+- every workflow then runs `analyze-ambiguity`;
+- if the ambiguity artifact says clarification is required, the workflow transitions to
+  `AWAITING_CLARIFICATION` and no implementation/test proposal task is created;
+- otherwise the planner runs, planned task records are stored, engineering agents produce
+  proposal/risk/release artifacts, and the workflow transitions to
+  `AWAITING_RELEASE_APPROVAL`.
+
+The REST evidence APIs now expose real durable data:
+
+- `GET /api/workflows/{workflowId}/tasks` returns generated task keys, agent types,
+  statuses, attempts, and dependencies;
+- `GET /api/workflows/{workflowId}/artifacts` returns current-revision artifact summaries
+  with hashes and producing task identifiers;
+- `GET /api/workflows/{workflowId}/artifacts/{name}` returns bounded artifact content;
+- `GET /api/workflows/{workflowId}/audit-events` returns task claim/completion and workflow
+  transition events.
+
+This checkpoint still does not mutate a submitted repository. Repository isolation,
+policy-controlled patch application, validation, repair, rollback, distributed leases, and
+restart recovery remain later checkpoints.

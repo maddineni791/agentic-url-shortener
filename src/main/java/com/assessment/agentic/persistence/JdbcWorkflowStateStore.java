@@ -5,6 +5,7 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -201,6 +202,73 @@ public class JdbcWorkflowStateStore implements WorkflowStateStore {
             revisionNumber,
             name
         ).stream().findFirst();
+    }
+
+    @Override
+    public Optional<RevisionRecord> findRevisionForWorkflowNumber(UUID workflowId, int revisionNumber) {
+        return jdbcTemplate.query(
+            "select * from workflow_revisions where workflow_id = ? and revision_number = ?",
+            this::mapRevision,
+            workflowId,
+            revisionNumber
+        ).stream().findFirst();
+    }
+
+    @Override
+    public List<TaskRecord> listTasks(UUID workflowId) {
+        return jdbcTemplate.query(
+            "select * from workflow_tasks where workflow_id = ? order by created_at, task_key",
+            this::mapTask,
+            workflowId
+        );
+    }
+
+    @Override
+    public List<ArtifactRecord> listArtifacts(UUID workflowId, UUID revisionId) {
+        return jdbcTemplate.query(
+            "select * from workflow_artifacts where workflow_id = ? and revision_id = ? order by created_at, name",
+            this::mapArtifact,
+            workflowId,
+            revisionId
+        );
+    }
+
+    @Override
+    public List<AuditEventRecord> listAuditEvents(UUID workflowId) {
+        return jdbcTemplate.query(
+            "select * from audit_events where workflow_id = ? order by created_at",
+            this::mapAuditEvent,
+            workflowId
+        );
+    }
+
+    @Override
+    public void updateWorkflowStatus(UUID workflowId, WorkflowStatus status) {
+        jdbcTemplate.update(
+            "update workflows set status = ?, updated_at = ? where id = ?",
+            status.name(),
+            Timestamp.from(clock.instant()),
+            workflowId
+        );
+    }
+
+    @Override
+    public void updateTaskStatus(UUID taskId, TaskStatus status) {
+        jdbcTemplate.update(
+            "update workflow_tasks set status = ?, updated_at = ? where id = ?",
+            status.name(),
+            Timestamp.from(clock.instant()),
+            taskId
+        );
+    }
+
+    @Override
+    public void incrementTaskAttempt(UUID taskId) {
+        jdbcTemplate.update(
+            "update workflow_tasks set attempt_count = attempt_count + 1, updated_at = ? where id = ?",
+            Timestamp.from(clock.instant()),
+            taskId
+        );
     }
 
     private WorkflowRecord mapWorkflow(ResultSet rs, int rowNum) throws SQLException {

@@ -1,6 +1,10 @@
 package com.assessment.agentic.api;
 
+import com.assessment.agentic.orchestration.WorkflowOrchestrator;
 import com.assessment.agentic.persistence.ArtifactRecord;
+import com.assessment.agentic.persistence.AuditEventRecord;
+import com.assessment.agentic.persistence.RevisionRecord;
+import com.assessment.agentic.persistence.TaskRecord;
 import com.assessment.agentic.persistence.WorkflowRecord;
 import com.assessment.agentic.persistence.WorkflowStateStore;
 import jakarta.validation.Valid;
@@ -24,9 +28,11 @@ import org.springframework.http.HttpStatus;
 public class WorkflowController {
 
     private final WorkflowStateStore store;
+    private final WorkflowOrchestrator orchestrator;
 
-    public WorkflowController(WorkflowStateStore store) {
+    public WorkflowController(WorkflowStateStore store, WorkflowOrchestrator orchestrator) {
         this.store = store;
+        this.orchestrator = orchestrator;
     }
 
     @PostMapping("/api/workflows")
@@ -43,6 +49,7 @@ public class WorkflowController {
             "api-submit-" + workflow.id(),
             request.requirement()
         );
+        orchestrator.startRevision(workflow, revision, principal.getName(), "api-submit-" + workflow.id());
         WorkflowRecord updated = store.findWorkflow(workflow.id()).orElseThrow();
         return ResponseEntity
             .created(URI.create("/api/workflows/" + workflow.id()))
@@ -61,21 +68,32 @@ public class WorkflowController {
     @PreAuthorize("hasRole('OPERATOR') or hasRole('CHANGE_APPROVER') or hasRole('RELEASE_APPROVER')")
     PageResponse<TaskStatusResponse> tasks(@PathVariable("workflowId") UUID workflowId) {
         requireWorkflow(workflowId);
-        return new PageResponse<>(List.of(), 0, 50, 0);
+        List<TaskStatusResponse> items = store.listTasks(workflowId).stream()
+            .map(TaskStatusResponse::from)
+            .toList();
+        return new PageResponse<>(items, 0, 50, items.size());
     }
 
     @GetMapping("/api/workflows/{workflowId}/revisions")
     @PreAuthorize("hasRole('OPERATOR') or hasRole('CHANGE_APPROVER') or hasRole('RELEASE_APPROVER')")
     PageResponse<RevisionResponse> revisions(@PathVariable("workflowId") UUID workflowId) {
         WorkflowRecord workflow = requireWorkflow(workflowId);
-        return new PageResponse<>(List.of(new RevisionResponse(workflow.currentRevision(), "ACTIVE")), 0, 50, 1);
+        List<RevisionResponse> items = store.findRevisionForWorkflowNumber(workflow.id(), workflow.currentRevision()).stream()
+            .map(RevisionResponse::from)
+            .toList();
+        return new PageResponse<>(items, 0, 50, items.size());
     }
 
     @GetMapping("/api/workflows/{workflowId}/artifacts")
     @PreAuthorize("hasRole('OPERATOR') or hasRole('CHANGE_APPROVER') or hasRole('RELEASE_APPROVER')")
     PageResponse<ArtifactSummaryResponse> artifacts(@PathVariable("workflowId") UUID workflowId) {
-        requireWorkflow(workflowId);
-        return new PageResponse<>(List.of(), 0, 50, 0);
+        WorkflowRecord workflow = requireWorkflow(workflowId);
+        RevisionRecord revision = store.findRevisionForWorkflowNumber(workflow.id(), workflow.currentRevision())
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Revision not found."));
+        List<ArtifactSummaryResponse> items = store.listArtifacts(workflowId, revision.id()).stream()
+            .map(ArtifactSummaryResponse::from)
+            .toList();
+        return new PageResponse<>(items, 0, 50, items.size());
     }
 
     @GetMapping("/api/workflows/{workflowId}/artifacts/{name}")
@@ -133,7 +151,10 @@ public class WorkflowController {
     @PreAuthorize("hasRole('OPERATOR') or hasRole('CHANGE_APPROVER') or hasRole('RELEASE_APPROVER')")
     PageResponse<AuditEventResponse> auditEvents(@PathVariable("workflowId") UUID workflowId) {
         requireWorkflow(workflowId);
-        return new PageResponse<>(List.of(), 0, 50, 0);
+        List<AuditEventResponse> items = store.listAuditEvents(workflowId).stream()
+            .map(AuditEventResponse::from)
+            .toList();
+        return new PageResponse<>(items, 0, 50, items.size());
     }
 
     private WorkflowRecord requireWorkflow(UUID workflowId) {
@@ -160,13 +181,23 @@ public class WorkflowController {
         }
     }
 
-    public record TaskStatusResponse(String taskKey, String status) {
+    public record TaskStatusResponse(String taskKey, String taskType, String status, int attemptCount, String dependsOn) {
+        static TaskStatusResponse from(TaskRecord task) {
+            return new TaskStatusResponse(task.taskKey(), task.taskType(), task.status().name(), task.attemptCount(), task.dependsOnJson());
+        }
     }
 
-    public record RevisionResponse(int revisionNumber, String status) {
+    public record RevisionResponse(int revisionNumber, String status, String requirementHash) {
+        static RevisionResponse from(RevisionRecord revision) {
+            return new RevisionResponse(revision.revisionNumber(), revision.status().name(), revision.requirementHash());
+        }
     }
 
-    public record ArtifactSummaryResponse(String name, String sha256) {
+    public record ArtifactSummaryResponse(String name, String mediaType, String sha256, String producingTaskId) {
+        static ArtifactSummaryResponse from(ArtifactRecord artifact) {
+            return new ArtifactSummaryResponse(artifact.name(), artifact.mediaType(), artifact.sha256(),
+                artifact.producingTaskId() == null ? null : artifact.producingTaskId().toString());
+        }
     }
 
     public record ArtifactContentResponse(String name, String mediaType, String sha256, String content) {
@@ -190,6 +221,9 @@ public class WorkflowController {
     public record ApprovalResponse(String gate, String decision) {
     }
 
-    public record AuditEventResponse(String eventType, String correlationId) {
+    public record AuditEventResponse(String eventType, String correlationId, String actor, String payloadHash) {
+        static AuditEventResponse from(AuditEventRecord event) {
+            return new AuditEventResponse(event.eventType(), event.correlationId(), event.actor(), event.originalPayloadSha256());
+        }
     }
 }

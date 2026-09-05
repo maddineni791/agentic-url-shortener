@@ -1,6 +1,7 @@
 package com.assessment.agentic.persistence;
 
 import java.util.Optional;
+import java.util.List;
 import java.util.UUID;
 
 public interface WorkflowStateStore {
@@ -40,4 +41,18 @@ public interface WorkflowStateStore {
     Optional<ArtifactRecord> findArtifact(UUID revisionId, String name);
 
     Optional<ArtifactRecord> findArtifactForWorkflowRevision(UUID workflowId, int revisionNumber, String name);
+
+    Optional<RevisionRecord> findRevisionForWorkflowNumber(UUID workflowId, int revisionNumber);
+
+    List<TaskRecord> listTasks(UUID workflowId);
+
+    List<ArtifactRecord> listArtifacts(UUID workflowId, UUID revisionId);
+
+    List<AuditEventRecord> listAuditEvents(UUID workflowId);
+
+    void updateWorkflowStatus(UUID workflowId, WorkflowStatus status);
+
+    void updateTaskStatus(UUID taskId, TaskStatus status);
+
+    void incrementTaskAttempt(UUID taskId);
 }

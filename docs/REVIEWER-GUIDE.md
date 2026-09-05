@@ -128,3 +128,22 @@ Representative tests:
 - `SpecializedAgentTests.ambiguityAgentBlocksMateriallyUnderspecifiedRequirement`
 - `SpecializedAgentTests.plannerProducesDynamicExecutionPlaneTasksWithDependenciesAndParallelBranches`
 - `SpecializedAgentTests.implementationAndTestAgentsProduceStructuredFileOperationProposals`
+
+## Checkpoint 6
+
+Expected behavior:
+
+- `POST /api/workflows` invokes the deterministic agent runner immediately.
+- Clear URL-shortener requirements produce durable task records, generated artifacts, and
+  audit events, ending in `AWAITING_RELEASE_APPROVAL`.
+- Ambiguous requirements produce requirement and ambiguity artifacts, then pause in
+  `AWAITING_CLARIFICATION` before implementation or test proposal generation.
+- Evidence is available through `tasks`, `artifacts`, artifact content, and audit APIs.
+
+Validation command:
+
+```powershell
+.\mvnw.cmd clean verify
+```
+
+Expected test result for checkpoint 6: 24 tests, 0 failures, 0 errors, 0 skipped.
