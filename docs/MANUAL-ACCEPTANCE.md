@@ -11,7 +11,11 @@ The required manual checks are:
 - agentic workflow submission;
 - idempotent replay;
 - artifact, audit, policy, and validation evidence inspection;
-- exact-hash release approval;
-- deliberate validation failure and repair;
-- ambiguous requirement pause;
+- exact-hash **change** approval, and rejection of a wrong plan hash;
+- exact-hash **release** approval, and rejection of an invented outcome hash;
+- deliberate validation failure and repair (fail -> repair -> pass);
+- ambiguous requirement pause, then clarification -> revision 2 -> resume;
+- safe stop with verified workspace rollback (`safe-stop-evidence.json`);
+- restart recovery of an interrupted `RUNNING` workflow (`workflow.recovery-resumed`);
+- optional asynchronous submission (`AGENTIC_ORCHESTRATION_ASYNC=true`);
 - Docker Compose config validation and two-instance startup.

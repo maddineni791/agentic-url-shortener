@@ -18,6 +18,7 @@ labels.
 - `agentic_repair_attempts_total`
 - `agentic_repair_duration_seconds`
 - `agentic_rollbacks_total`
+- `agentic_workflow_recoveries_total`
 - `agentic_idempotency_replays_total`
 - `agentic_model_calls_total`
 - `agentic_model_latency_seconds`

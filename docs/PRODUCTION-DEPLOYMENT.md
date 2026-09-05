@@ -13,6 +13,9 @@ deployment requires platform operations outside this codebase.
 - Local Basic authentication for deterministic evaluation.
 - Optional OpenAI Responses API provider via environment variables.
 - Prometheus metrics and recording rules.
+- Asynchronous orchestration (`AGENTIC_ORCHESTRATION_ASYNC=true`) plus automatic restart
+  recovery of interrupted revisions from the durable PostgreSQL checkpoint.
+- Configurable sandbox validation timeout (`AGENTIC_VALIDATION_TIMEOUT`, default `PT3M`).
 
 ## Operator Responsibilities
 

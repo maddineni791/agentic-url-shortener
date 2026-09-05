@@ -126,7 +126,39 @@ $workflowId = $workflow.id
 $workflow
 ```
 
-Expected status: `AWAITING_RELEASE_APPROVAL`.
+Expected status: `AWAITING_CHANGE_APPROVAL`. The design segment has published
+`engineering-plan.json`; no isolated workspace or patch exists yet.
+
+## Exact Change Approval
+
+```powershell
+$changeApprover = New-Object pscredential "change-approver",(ConvertTo-SecureString "change-pass" -AsPlainText -Force)
+
+$plan = Invoke-RestMethod `
+  "http://localhost:8080/api/workflows/$workflowId/artifacts/engineering-plan.json" `
+  -Credential $changeApprover
+
+# Wrong hash is rejected and persisted as a REJECTED approval.
+Invoke-WebRequest `
+  -Uri "http://localhost:8080/api/workflows/$workflowId/approvals/change" `
+  -Method Post `
+  -Credential $changeApprover `
+  -ContentType "application/json" `
+  -Body (@{ artifactHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; reason = "guessed" } | ConvertTo-Json) `
+  -SkipHttpErrorCheck
+
+# Exact current-revision plan hash resumes the build segment.
+Invoke-RestMethod `
+  -Uri "http://localhost:8080/api/workflows/$workflowId/approvals/change" `
+  -Method Post `
+  -Credential $changeApprover `
+  -ContentType "application/json" `
+  -Body (@{ artifactHash = $plan.sha256; reason = "Reviewed engineering plan." } | ConvertTo-Json)
+
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId" -Credential $operator
+```
+
+Expected status after change approval: `AWAITING_RELEASE_APPROVAL`.
 
 Inspect execution evidence:
 
@@ -210,12 +242,17 @@ $repair = Invoke-RestMethod `
   -ContentType "application/json" `
   -Body $repairBody
 
+# Approve the change gate to run the build/validation/repair segment.
+$repairPlan = Invoke-RestMethod "http://localhost:8080/api/workflows/$($repair.id)/artifacts/engineering-plan.json" -Credential $changeApprover
+Invoke-RestMethod -Uri "http://localhost:8080/api/workflows/$($repair.id)/approvals/change" -Method Post -Credential $changeApprover `
+  -ContentType "application/json" -Body (@{ artifactHash = $repairPlan.sha256; reason = "reviewed" } | ConvertTo-Json)
+
 Invoke-RestMethod "http://localhost:8080/api/workflows/$($repair.id)/validation-attempts" -Credential $operator
 Invoke-RestMethod "http://localhost:8080/api/workflows/$($repair.id)/artifacts/repair-proposal.json" -Credential $operator
 ```
 
-Expected evidence: two validation attempts, with the first failing and the second passing
-after repair.
+Expected evidence: two validation attempts, with the first failing (non-zero exit) and the
+second passing after repair.
 
 ## Ambiguity Demonstration
 
@@ -239,6 +276,68 @@ Invoke-RestMethod "http://localhost:8080/api/workflows/$($ambiguous.id)/artifact
 Expected status: `AWAITING_CLARIFICATION`. No patch artifacts are created for this
 revision. Inspect `normalized-requirement.json` as well to see the missing requirement
 dimensions that drive the ambiguity decision.
+
+## Clarification And Revision 2
+
+```powershell
+$clarifyBody = @{
+  questionId = "acceptance-and-scope"
+  answer = "Provide REST endpoints to create short URLs and redirect, persist records in PostgreSQL, require API key authentication and rate limiting, apply 30 day expiry, and expose UTC daily analytics."
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Uri "http://localhost:8080/api/workflows/$($ambiguous.id)/clarifications" `
+  -Method Post `
+  -Credential $operator `
+  -ContentType "application/json" `
+  -Body $clarifyBody
+
+Invoke-RestMethod "http://localhost:8080/api/workflows/$($ambiguous.id)" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$($ambiguous.id)/artifacts/clarified-requirement.txt" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$($ambiguous.id)/audit-events" -Credential $operator
+```
+
+Expected: `currentRevision` becomes `2`, status becomes `AWAITING_CHANGE_APPROVAL`, the
+audit trail contains `workflow.clarification-received` and `workflow.revision-created`, and
+a second clarification attempt returns HTTP 409.
+
+## Safe Stop And Rollback
+
+```powershell
+$safe = Invoke-RestMethod `
+  -Uri http://localhost:8080/api/workflows `
+  -Method Post `
+  -Credential $operator `
+  -ContentType "application/json" `
+  -Body $body   # any concrete scenario
+
+# Approve the change gate so an isolated workspace exists, then stop and roll back.
+$safePlan = Invoke-RestMethod "http://localhost:8080/api/workflows/$($safe.id)/artifacts/engineering-plan.json" -Credential $changeApprover
+Invoke-RestMethod -Uri "http://localhost:8080/api/workflows/$($safe.id)/approvals/change" -Method Post -Credential $changeApprover `
+  -ContentType "application/json" -Body (@{ artifactHash = $safePlan.sha256; reason = "reviewed" } | ConvertTo-Json)
+
+Invoke-RestMethod -Uri "http://localhost:8080/api/workflows/$($safe.id)/safe-stop" -Method Post -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$($safe.id)" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$($safe.id)/artifacts/safe-stop-evidence.json" -Credential $operator
+```
+
+Expected: status `SAFE_STOPPED`; `safe-stop-evidence.json` shows `rollbackVerified: true`
+and `workspaceExisted: true`; a second safe-stop returns HTTP 409.
+
+## Restart Recovery
+
+`WorkflowRecoveryService` resumes any workflow left `RUNNING` by a stopped instance, on
+startup and every `agentic.orchestration.recovery-interval` (default 30s). To observe it,
+submit a workflow, `docker kill` / stop the app while the build segment runs, then restart
+it: the `workflow.recovery-resumed` audit event records how the revision was re-driven from
+its last durable checkpoint. `WorkflowRecoveryServiceTests` exercises the checkpoint logic
+without a real restart.
+
+## Asynchronous Submission
+
+Set `AGENTIC_ORCHESTRATION_ASYNC=true` before starting the app. `POST /api/workflows` then
+returns immediately with status `SUBMITTED`/`RUNNING`; poll `GET /api/workflows/{id}` until
+it reaches `AWAITING_CHANGE_APPROVAL`.
 
 ## Docker Compose
 

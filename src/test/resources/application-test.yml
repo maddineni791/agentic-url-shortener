@@ -4,6 +4,8 @@ spring:
     username: sa
     password:
 agentic:
+  orchestration:
+    recovery-scheduled: false
   url-shortener:
     rate-limit-per-minute: 100
     blocked-hosts:

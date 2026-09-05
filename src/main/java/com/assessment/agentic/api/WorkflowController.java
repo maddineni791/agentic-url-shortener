@@ -1,5 +1,7 @@
 package com.assessment.agentic.api;
 
+import com.assessment.agentic.orchestration.OrchestrationProperties;
+import com.assessment.agentic.orchestration.WorkflowExecutionDispatcher;
 import com.assessment.agentic.orchestration.WorkflowOrchestrator;
 import com.assessment.agentic.persistence.ArtifactRecord;
 import com.assessment.agentic.persistence.AuditEventRecord;
@@ -37,11 +39,16 @@ public class WorkflowController {
     private final WorkflowStateStore store;
     private final WorkflowOrchestrator orchestrator;
     private final WorkflowMetrics workflowMetrics;
+    private final WorkflowExecutionDispatcher dispatcher;
+    private final OrchestrationProperties orchestrationProperties;
 
-    public WorkflowController(WorkflowStateStore store, WorkflowOrchestrator orchestrator, WorkflowMetrics workflowMetrics) {
+    public WorkflowController(WorkflowStateStore store, WorkflowOrchestrator orchestrator, WorkflowMetrics workflowMetrics,
+        WorkflowExecutionDispatcher dispatcher, OrchestrationProperties orchestrationProperties) {
         this.store = store;
         this.orchestrator = orchestrator;
         this.workflowMetrics = workflowMetrics;
+        this.dispatcher = dispatcher;
+        this.orchestrationProperties = orchestrationProperties;
     }
 
     @PostMapping("/api/workflows")
@@ -81,7 +88,11 @@ public class WorkflowController {
             "api-submit-" + workflow.id(),
             request.requirement()
         );
-        orchestrator.startRevision(workflow, revision, principal.getName(), "api-submit-" + workflow.id());
+        if (orchestrationProperties.isAsync()) {
+            dispatcher.dispatchStartRevision(workflow, revision, principal.getName(), "api-submit-" + workflow.id());
+        } else {
+            orchestrator.startRevision(workflow, revision, principal.getName(), "api-submit-" + workflow.id());
+        }
         WorkflowRecord updated = store.findWorkflow(workflow.id()).orElseThrow();
         return ResponseEntity
             .created(URI.create("/api/workflows/" + workflow.id()))
@@ -169,7 +180,11 @@ public class WorkflowController {
         boolean atChangeGate = workflow.status() == WorkflowStatus.AWAITING_CHANGE_APPROVAL;
         ApprovalRecord approval = recordApproval(workflow, "CHANGE", "ROLE_CHANGE_APPROVER", "engineering-plan.json", request, principal, servletRequest);
         if (atChangeGate) {
-            orchestrator.resumeAfterChangeApproval(workflowId, principal.getName(), correlationId(servletRequest));
+            if (orchestrationProperties.isAsync()) {
+                dispatcher.dispatchResumeAfterChangeApproval(workflowId, principal.getName(), correlationId(servletRequest));
+            } else {
+                orchestrator.resumeAfterChangeApproval(workflowId, principal.getName(), correlationId(servletRequest));
+            }
         }
         return ResponseEntity.accepted().body(ApprovalResponse.from(approval));
     }

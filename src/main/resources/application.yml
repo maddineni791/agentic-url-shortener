@@ -17,6 +17,9 @@ agentic:
     redirect-event-retention: ${AGENTIC_REDIRECT_EVENT_RETENTION:90d}
     inactive-url-retention: ${AGENTIC_INACTIVE_URL_RETENTION:30d}
     blocked-hosts: ${AGENTIC_BLOCKED_HOSTS:}
+  validation:
+    timeout: ${AGENTIC_VALIDATION_TIMEOUT:PT3M}
+    max-output-chars: ${AGENTIC_VALIDATION_MAX_OUTPUT_CHARS:12000}
   model:
     provider: ${AGENTIC_MODEL_PROVIDER:deterministic}
     timeout: ${AGENTIC_MODEL_TIMEOUT:PT20S}

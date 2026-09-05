@@ -171,7 +171,7 @@ public class IsolatedRepositoryService {
         Path sourceRoot = Path.of("").toAbsolutePath().normalize();
         copyIfExists(sourceRoot.resolve("pom.xml"), workspace.resolve("pom.xml"));
         copyIfExists(sourceRoot.resolve("mvnw.cmd"), workspace.resolve("mvnw.cmd"));
-        copyIfExists(sourceRoot.resolve("mvnw"), workspace.resolve("mvnw"));
+        copyExecutable(sourceRoot.resolve("mvnw"), workspace.resolve("mvnw"));
         Path sourceWrapper = sourceRoot.resolve(".mvn").resolve("wrapper");
         if (Files.exists(sourceWrapper)) {
             try (var stream = Files.walk(sourceWrapper)) {
@@ -183,8 +183,10 @@ public class IsolatedRepositoryService {
             }
         }
         Files.createDirectories(workspace.resolve(".mvn"));
-        Path validationRepository = sourceRoot.resolve("target").resolve("validation-maven-repository").toAbsolutePath().normalize();
-        Files.writeString(workspace.resolve(".mvn").resolve("maven.config"), "-Dmaven.repo.local=" + validationRepository.toString().replace('\\', '/') + "\n",
+        // Reuse the platform's already-populated local repository so the sandboxed build does not
+        // re-download Spring/JUnit into an empty repo (which is slow and flaky under CI timeouts).
+        Path sharedRepository = sourceRoot.resolve(".mvn").resolve("repository").toAbsolutePath().normalize();
+        Files.writeString(workspace.resolve(".mvn").resolve("maven.config"), "-Dmaven.repo.local=" + sharedRepository.toString().replace('\\', '/') + "\n",
             StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
         if (!Files.exists(workspace.resolve("README.md"))) {
             Files.writeString(workspace.resolve("README.md"), "# Isolated generated workspace\n", StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);
@@ -195,6 +197,15 @@ public class IsolatedRepositoryService {
         if (Files.exists(source)) {
             Files.createDirectories(target.getParent());
             Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private void copyExecutable(Path source, Path target) throws IOException {
+        if (Files.exists(source)) {
+            Files.createDirectories(target.getParent());
+            Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
+            // Files.copy does not carry POSIX permissions; the Maven wrapper must stay runnable on Linux CI.
+            target.toFile().setExecutable(true, false);
         }
     }
 

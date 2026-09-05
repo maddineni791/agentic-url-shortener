@@ -65,6 +65,7 @@ public class WorkflowOrchestrator {
     private final FixedMavenValidationRunner validationRunner;
     private final ObjectMapper objectMapper;
     private final WorkflowMetrics workflowMetrics;
+    private final TaskGraphExecutor taskGraphExecutor;
 
     public WorkflowOrchestrator(
         WorkflowStateStore store,
@@ -82,7 +83,8 @@ public class WorkflowOrchestrator {
         IsolatedRepositoryService isolatedRepositoryService,
         FixedMavenValidationRunner validationRunner,
         ObjectMapper objectMapper,
-        WorkflowMetrics workflowMetrics
+        WorkflowMetrics workflowMetrics,
+        TaskGraphExecutor taskGraphExecutor
     ) {
         this.store = store;
         this.requirementAgent = requirementAgent;
@@ -100,9 +102,32 @@ public class WorkflowOrchestrator {
         this.validationRunner = validationRunner;
         this.objectMapper = objectMapper;
         this.workflowMetrics = workflowMetrics;
+        this.taskGraphExecutor = taskGraphExecutor;
     }
 
-    @Transactional
+    private void runBuildNode(String nodeKey, WorkflowRecord workflow, RevisionRecord revision, String actor, String correlationId) {
+        switch (nodeKey) {
+            case "analyze-repository" -> run(nodeKey, AgentRole.CODEBASE_ANALYST, List.of("decompose-tasks"), workflow, revision, actor, correlationId,
+                task -> repositoryAgent.execute(task, contextWithArtifacts(workflow, revision)));
+            case "design-change" -> run(nodeKey, AgentRole.ARCHITECT, List.of("analyze-repository"), workflow, revision, actor, correlationId,
+                task -> architectureAgent.execute(task, contextWithArtifacts(workflow, revision)));
+            case "implement-change" -> run(nodeKey, AgentRole.IMPLEMENTER, List.of("design-change"), workflow, revision, actor, correlationId,
+                task -> implementationAgent.execute(task, contextWithArtifacts(workflow, revision)));
+            case "generate-tests" -> run(nodeKey, AgentRole.TEST_ENGINEER, List.of("design-change"), workflow, revision, actor, correlationId,
+                task -> testGenerationAgent.execute(task, contextWithArtifacts(workflow, revision)));
+            case "security-risk-review" -> run(nodeKey, AgentRole.SECURITY_REVIEWER, List.of("design-change"), workflow, revision, actor, correlationId,
+                task -> securityRiskReviewAgent.execute(task, contextWithArtifacts(workflow, revision)));
+            case "apply-generated-patch" -> applyGeneratedPatch(workflow, revision, actor, correlationId);
+            case "document-outcome" -> run(nodeKey, AgentRole.DOCUMENTATION_WRITER, List.of("apply-generated-patch"), workflow, revision, actor, correlationId,
+                task -> documentationAgent.execute(task, contextWithArtifacts(workflow, revision)));
+            case "release-readiness" -> run(nodeKey, AgentRole.RELEASE_REVIEWER, List.of("document-outcome", "security-risk-review"), workflow, revision, actor, correlationId,
+                task -> releaseReadinessAgent.execute(task, contextWithArtifacts(workflow, revision)));
+            default -> throw new IllegalStateException("Unknown build-graph node: " + nodeKey);
+        }
+    }
+
+    // Not @Transactional: each agent step commits its own evidence so that a crashed run leaves a
+    // durable checkpoint for WorkflowRecoveryService, and parallel build-graph waves write off-thread.
     public void startRevision(WorkflowRecord workflow, RevisionRecord revision, String actor, String correlationId) {
         store.updateWorkflowStatus(workflow.id(), WorkflowStatus.RUNNING);
         String requirementText = requirementFor(workflow, revision);
@@ -234,7 +259,6 @@ public class WorkflowOrchestrator {
      * Resumes a workflow that was paused in {@code AWAITING_CHANGE_APPROVAL} once the change gate
      * has recorded a valid, exact-evidence approval for the current-revision engineering plan.
      */
-    @Transactional
     public void resumeAfterChangeApproval(UUID workflowId, String actor, String correlationId) {
         WorkflowRecord workflow = store.findWorkflow(workflowId)
             .orElseThrow(() -> new IllegalArgumentException("Workflow not found."));
@@ -246,22 +270,22 @@ public class WorkflowOrchestrator {
         runBuildPhase(workflow, revision, actor, correlationId);
     }
 
+    private static final List<TaskGraphExecutor.GraphNode> BUILD_GRAPH = List.of(
+        new TaskGraphExecutor.GraphNode("analyze-repository", List.of()),
+        new TaskGraphExecutor.GraphNode("design-change", List.of("analyze-repository")),
+        new TaskGraphExecutor.GraphNode("implement-change", List.of("design-change")),
+        new TaskGraphExecutor.GraphNode("generate-tests", List.of("design-change")),
+        new TaskGraphExecutor.GraphNode("security-risk-review", List.of("design-change")),
+        new TaskGraphExecutor.GraphNode("apply-generated-patch", List.of("implement-change", "generate-tests")),
+        new TaskGraphExecutor.GraphNode("document-outcome", List.of("apply-generated-patch")),
+        new TaskGraphExecutor.GraphNode("release-readiness", List.of("document-outcome", "security-risk-review"))
+    );
+
     private void runBuildPhase(WorkflowRecord workflow, RevisionRecord revision, String actor, String correlationId) {
-        run("analyze-repository", AgentRole.CODEBASE_ANALYST, List.of("decompose-tasks"), workflow, revision, actor, correlationId,
-            task -> repositoryAgent.execute(task, contextWithArtifacts(workflow, revision)));
-        run("design-change", AgentRole.ARCHITECT, List.of("analyze-repository"), workflow, revision, actor, correlationId,
-            task -> architectureAgent.execute(task, contextWithArtifacts(workflow, revision)));
-        run("implement-change", AgentRole.IMPLEMENTER, List.of("design-change"), workflow, revision, actor, correlationId,
-            task -> implementationAgent.execute(task, contextWithArtifacts(workflow, revision)));
-        run("generate-tests", AgentRole.TEST_ENGINEER, List.of("design-change"), workflow, revision, actor, correlationId,
-            task -> testGenerationAgent.execute(task, contextWithArtifacts(workflow, revision)));
-        applyGeneratedPatch(workflow, revision, actor, correlationId);
-        run("document-outcome", AgentRole.DOCUMENTATION_WRITER, List.of("apply-generated-patch"), workflow, revision, actor, correlationId,
-            task -> documentationAgent.execute(task, contextWithArtifacts(workflow, revision)));
-        run("security-risk-review", AgentRole.SECURITY_REVIEWER, List.of("design-change"), workflow, revision, actor, correlationId,
-            task -> securityRiskReviewAgent.execute(task, contextWithArtifacts(workflow, revision)));
-        run("release-readiness", AgentRole.RELEASE_REVIEWER, List.of("document-outcome", "security-risk-review"), workflow, revision, actor, correlationId,
-            task -> releaseReadinessAgent.execute(task, contextWithArtifacts(workflow, revision)));
+        List<List<String>> waves = taskGraphExecutor.execute(BUILD_GRAPH,
+            nodeKey -> runBuildNode(nodeKey, workflow, revision, actor, correlationId));
+        store.appendAuditEvent(workflow.id(), revision.id(), null, "workflow.build-graph-executed", actor, correlationId,
+            write(Map.of("waves", waves)));
         store.createArtifact(workflow.id(), revision.id(), null, "engineering-outcome.json", "application/json",
             write(Map.of(
                 "workflowId", workflow.id(),

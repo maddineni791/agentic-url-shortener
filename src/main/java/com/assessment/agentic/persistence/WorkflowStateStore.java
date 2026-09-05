@@ -70,6 +70,8 @@ public interface WorkflowStateStore {
 
     Optional<WorkflowRecord> findWorkflow(UUID workflowId);
 
+    List<WorkflowRecord> listWorkflowsByStatus(WorkflowStatus status, int limit);
+
     Optional<RevisionRecord> findRevision(UUID revisionId);
 
     Optional<TaskRecord> findTask(UUID taskId);

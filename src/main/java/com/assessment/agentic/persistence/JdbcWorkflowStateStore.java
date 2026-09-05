@@ -292,6 +292,16 @@ public class JdbcWorkflowStateStore implements WorkflowStateStore {
     }
 
     @Override
+    public List<WorkflowRecord> listWorkflowsByStatus(WorkflowStatus status, int limit) {
+        return jdbcTemplate.query(
+            "select * from workflows where status = ? order by updated_at asc limit ?",
+            this::mapWorkflow,
+            status.name(),
+            Math.max(1, limit)
+        );
+    }
+
+    @Override
     public Optional<RevisionRecord> findRevision(UUID revisionId) {
         return jdbcTemplate.query("select * from workflow_revisions where id = ?", this::mapRevision, revisionId).stream().findFirst();
     }

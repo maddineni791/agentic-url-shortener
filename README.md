@@ -117,16 +117,26 @@ $workflow = Invoke-RestMethod `
   -Body $body
 
 $workflowId = $workflow.id
-$workflow
+$workflow   # status: AWAITING_CHANGE_APPROVAL
 ```
 
-Inspect evidence:
+Approve the change gate with the exact plan hash to run the build segment:
+
+```powershell
+$changeApprover = New-Object pscredential "change-approver",(ConvertTo-SecureString "change-pass" -AsPlainText -Force)
+$plan = Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/artifacts/engineering-plan.json" -Credential $changeApprover
+Invoke-RestMethod -Uri "http://localhost:8080/api/workflows/$workflowId/approvals/change" -Method Post -Credential $changeApprover `
+  -ContentType "application/json" -Body (@{ artifactHash = $plan.sha256; reason = "Reviewed plan." } | ConvertTo-Json)
+```
+
+Inspect evidence (now `AWAITING_RELEASE_APPROVAL`):
 
 ```powershell
 Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/tasks" -Credential $operator
 Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/artifacts" -Credential $operator
 Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/validation-attempts" -Credential $operator
 Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/policies" -Credential $operator
+Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/audit-events" -Credential $operator   # includes workflow.build-graph-executed
 ```
 
 The deterministic implementation agent proposes a generated URL-shortener slice instead of
@@ -191,9 +201,32 @@ The deterministic provider is the default and requires no API key. Both provider
 same structured model contracts, patch policy, repository mutation, validation, repair,
 evidence, and approval pipeline.
 
+## Orchestration Controls
+
+- **Change gate** — every revision pauses in `AWAITING_CHANGE_APPROVAL` after
+  `engineering-plan.json`; no workspace is created until a change approver supplies the
+  exact plan hash. The build segment then runs as a task graph (`TaskGraphExecutor`) with
+  `implement-change` ∥ `generate-tests` ∥ `security-risk-review` and a barrier at patch
+  application.
+- **Clarification** — `POST /api/workflows/{id}/clarifications` opens revision N+1 with the
+  original requirement plus answer lineage and resumes execution.
+- **Safe stop / rollback** — `POST /api/workflows/{id}/safe-stop` cancels a non-terminal
+  workflow and restores its workspace from a manifest-verified baseline snapshot; rollback
+  also runs automatically when the bounded repair budget is exhausted.
+- **Restart recovery** — `WorkflowRecoveryService` resumes any `RUNNING` revision from its
+  durable PostgreSQL checkpoint on startup and every `agentic.orchestration.recovery-interval`.
+- **Async submission** — set `AGENTIC_ORCHESTRATION_ASYNC=true` to return from `POST
+  /api/workflows` immediately and run orchestration on the bounded executor.
+
+See `docs/TRACEABILITY.md` for requirement-by-requirement status.
+
 ## Limitations
 
 This assessment implementation demonstrates the lifecycle inside a runnable platform.
-Production identity-provider provisioning, certificate issuance, external secret
+The deterministic provider is template-based (requirement understanding, ambiguity, and
+repair are keyword/template driven); open-ended requirements need the OpenAI provider.
+Generated code is validated in isolation and not merged into the platform's own shortener
+module. Per-node task leases are persisted and tested but not yet claimed by the in-process
+runner. Production identity-provider provisioning, certificate issuance, external secret
 management, DNS, global ingress limits, egress policy, and actual multi-region deployment
 remain operator responsibilities documented in `docs/PRODUCTION-DEPLOYMENT.md`.

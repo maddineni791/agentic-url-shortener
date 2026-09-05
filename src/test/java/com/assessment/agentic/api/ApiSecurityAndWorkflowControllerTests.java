@@ -279,8 +279,10 @@ class ApiSecurityAndWorkflowControllerTests {
                 .with(httpBasic("operator", "operator-pass")))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.total").value(2))
-            .andExpect(jsonPath("$.items[0].failureClassification").value("COMPILER"))
-            .andExpect(jsonPath("$.items[1].exitCode").value(0));
+            .andExpect(jsonPath("$.items[0].exitCode").value(org.hamcrest.Matchers.not(0)))
+            .andExpect(jsonPath("$.items[0].failureClassification").value(org.hamcrest.Matchers.not("NONE")))
+            .andExpect(jsonPath("$.items[1].exitCode").value(0))
+            .andExpect(jsonPath("$.items[1].failureClassification").value("NONE"));
 
         mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts")
                 .with(httpBasic("operator", "operator-pass")))

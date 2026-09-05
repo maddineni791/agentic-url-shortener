@@ -52,6 +52,10 @@ public class WorkflowMetrics {
         meterRegistry.counter("agentic_rollbacks_total", "outcome", outcome).increment();
     }
 
+    public void workflowRecovery(String outcome) {
+        meterRegistry.counter("agentic_workflow_recoveries_total", "outcome", outcome).increment();
+    }
+
     public void idempotencyReplay(String outcome) {
         meterRegistry.counter("agentic_idempotency_replays_total", "outcome", outcome).increment();
     }
