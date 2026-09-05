@@ -119,7 +119,8 @@ public class IsolatedRepositoryService {
             }
         }
         Files.createDirectories(workspace.resolve(".mvn"));
-        Files.writeString(workspace.resolve(".mvn").resolve("maven.config"), "-Dmaven.repo.local=" + sourceRoot.resolve(".mvn").resolve("repository").toString().replace('\\', '/') + "\n",
+        Path validationRepository = sourceRoot.resolve("target").resolve("validation-maven-repository").toAbsolutePath().normalize();
+        Files.writeString(workspace.resolve(".mvn").resolve("maven.config"), "-Dmaven.repo.local=" + validationRepository.toString().replace('\\', '/') + "\n",
             StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
         if (!Files.exists(workspace.resolve("README.md"))) {
             Files.writeString(workspace.resolve("README.md"), "# Isolated generated workspace\n", StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);

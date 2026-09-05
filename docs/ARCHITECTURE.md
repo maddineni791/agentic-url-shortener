@@ -19,7 +19,8 @@ commands. Humans approve exact current evidence by SHA-256 hash.
 - `repository`: isolated workspace creation, file-operation policy, atomic writes, unified
   diffs, and SHA-256 manifests.
 - `validation`: fixed Maven Wrapper validation with timeout, bounded logs, credential
-  stripping, exit code capture, and failure classification.
+  stripping, exit code capture, failure classification, and a validation-only Maven
+  dependency repository separate from the parent build cache.
 - `persistence`: Spring JDBC stores backed by PostgreSQL and Flyway.
 - `urlshortener`: functional URL shortener used as the concrete engineering target.
 - `observability`: Micrometer metrics, Prometheus scrape endpoint, and recording rules.
@@ -43,7 +44,11 @@ commands. Humans approve exact current evidence by SHA-256 hash.
 13. exact-hash human approval.
 
 If ambiguity analysis determines that the requirement is materially underspecified, the
-workflow transitions to `AWAITING_CLARIFICATION` and no patch artifacts are created.
+workflow transitions to `AWAITING_CLARIFICATION` and no patch artifacts are created. The
+ambiguity decision consumes the validated `normalized-requirement.json` dimensions for
+acceptance criteria, scope, API behavior, persistence, security, time boundaries,
+repository target, and operational constraints; it is not based only on scenario keys or
+trigger phrases.
 
 The deterministic implementation and test agents generate the actual file operations that
 are later applied. For the URL-shortener scenarios, the generated implementation includes a

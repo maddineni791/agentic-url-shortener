@@ -237,7 +237,8 @@ Invoke-RestMethod "http://localhost:8080/api/workflows/$($ambiguous.id)/artifact
 ```
 
 Expected status: `AWAITING_CLARIFICATION`. No patch artifacts are created for this
-revision.
+revision. Inspect `normalized-requirement.json` as well to see the missing requirement
+dimensions that drive the ambiguity decision.
 
 ## Docker Compose
 

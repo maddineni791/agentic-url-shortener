@@ -55,19 +55,25 @@ class SpecializedAgentTests {
 
     @Test
     void ambiguityAgentBlocksMateriallyUnderspecifiedRequirement() {
-        ExecutionContext context = context("Make it better.");
+        ExecutionContext context = contextWithRequirementAnalysis("Make it better.");
         AgentTask task = task("ambiguity", AgentRole.AMBIGUITY_ANALYST, "Decide whether implementation may start");
 
         AgentExecutionResult<AmbiguityAnalysis> result = ambiguityClarificationAgent.execute(task, context);
 
         assertThat(result.output().requiresClarification()).isTrue();
-        assertThat(result.output().blockingFields()).contains("apiBehavior", "persistenceRequirements", "securityRequirements", "timeBoundaries");
+        assertThat(result.output().blockingFields()).contains(
+            "acceptanceCriteria",
+            "apiBehavior",
+            "persistenceRequirements",
+            "securityRequirements",
+            "timeBoundaries"
+        );
         assertThat(result.output().questions()).isNotEmpty();
     }
 
     @Test
     void ambiguityAgentAllowsConcreteRequirementWithoutScenarioEnum() {
-        ExecutionContext context = context("""
+        ExecutionContext context = contextWithRequirementAnalysis("""
             Add a URL creation API and redirect endpoint with PostgreSQL storage, rate limiting,
             blocked host validation, expiry, retention cleanup, and UTC daily analytics.
             """);
@@ -77,6 +83,30 @@ class SpecializedAgentTests {
 
         assertThat(result.output().requiresClarification()).isFalse();
         assertThat(result.output().blockingFields()).isEmpty();
+    }
+
+    @Test
+    void ambiguityAgentUsesValidatedRequirementDimensionsRatherThanTriggerPhrases() {
+        ExecutionContext context = new ExecutionContext("wf-test", 1, "Add custom aliases to the URL shortener.", Map.of(
+            "requirement.acceptanceCriteria", "Aliases can be reserved and looked up through HTTP APIs",
+            "requirement.scope", "URL shortener alias enhancement",
+            "requirement.apiBehavior", "POST creates aliases and redirects resolve aliases",
+            "requirement.persistenceRequirements", "MISSING: persistenceRequirements is not specified by the submitted requirement.",
+            "requirement.securityRequirements", "MISSING: securityRequirements is not specified by the submitted requirement.",
+            "requirement.timeBoundaries", "MISSING: timeBoundaries is not specified by the submitted requirement.",
+            "requirement.repositoryTarget", "Submitted URL shortener repository",
+            "requirement.operationalConstraints", "Use existing Java 21 Spring Boot conventions"
+        ));
+        AgentTask task = task("ambiguity", AgentRole.AMBIGUITY_ANALYST, "Decide whether implementation may start");
+
+        AgentExecutionResult<AmbiguityAnalysis> result = ambiguityClarificationAgent.execute(task, context);
+
+        assertThat(result.output().requiresClarification()).isTrue();
+        assertThat(result.output().blockingFields()).containsExactlyInAnyOrder(
+            "persistenceRequirements",
+            "securityRequirements",
+            "timeBoundaries"
+        );
     }
 
     @Test
@@ -138,6 +168,23 @@ class SpecializedAgentTests {
 
     private ExecutionContext context(String requirement) {
         return new ExecutionContext("wf-test", 1, requirement, Map.of());
+    }
+
+    private ExecutionContext contextWithRequirementAnalysis(String requirement) {
+        RequirementAnalysis analysis = requirementUnderstandingAgent.execute(
+            task("understand", AgentRole.REQUIREMENT_INTERPRETER, "Normalize the submitted requirement"),
+            context(requirement)
+        ).output();
+        return new ExecutionContext("wf-test", 1, requirement, Map.of(
+            "requirement.acceptanceCriteria", String.join(" | ", analysis.acceptanceCriteria()),
+            "requirement.scope", analysis.scope(),
+            "requirement.apiBehavior", analysis.apiBehavior(),
+            "requirement.persistenceRequirements", analysis.persistenceRequirements(),
+            "requirement.securityRequirements", analysis.securityRequirements(),
+            "requirement.timeBoundaries", analysis.timeBoundaries(),
+            "requirement.repositoryTarget", analysis.repositoryTarget(),
+            "requirement.operationalConstraints", analysis.operationalConstraints()
+        ));
     }
 
     private AgentTask task(String id, AgentRole role, String goal) {

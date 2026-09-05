@@ -14,6 +14,7 @@ import com.assessment.agentic.agents.ImplementationAgent;
 import com.assessment.agentic.agents.RepairAgent;
 import com.assessment.agentic.agents.ReleaseReadinessAgent;
 import com.assessment.agentic.agents.RepositoryAnalysisAgent;
+import com.assessment.agentic.agents.RequirementAnalysis;
 import com.assessment.agentic.agents.RequirementUnderstandingAgent;
 import com.assessment.agentic.agents.SecurityRiskReviewAgent;
 import com.assessment.agentic.agents.TaskDecompositionAgent;
@@ -352,8 +353,23 @@ public class WorkflowOrchestrator {
         artifacts.put("scenarioKey", workflow.scenarioKey());
         for (ArtifactRecord artifact : store.listArtifacts(workflow.id(), revision.id())) {
             artifacts.put(artifact.name(), artifact.sha256());
+            if ("normalized-requirement.json".equals(artifact.name())) {
+                putRequirementDimensions(artifacts, artifact.content());
+            }
         }
         return new ExecutionContext(workflow.id().toString(), revision.revisionNumber(), workflow.originalRequirement(), artifacts);
+    }
+
+    private void putRequirementDimensions(Map<String, String> artifacts, String content) {
+        RequirementAnalysis requirement = read(content, RequirementAnalysis.class);
+        artifacts.put("requirement.acceptanceCriteria", String.join(" | ", requirement.acceptanceCriteria()));
+        artifacts.put("requirement.scope", requirement.scope());
+        artifacts.put("requirement.apiBehavior", requirement.apiBehavior());
+        artifacts.put("requirement.persistenceRequirements", requirement.persistenceRequirements());
+        artifacts.put("requirement.securityRequirements", requirement.securityRequirements());
+        artifacts.put("requirement.timeBoundaries", requirement.timeBoundaries());
+        artifacts.put("requirement.repositoryTarget", requirement.repositoryTarget());
+        artifacts.put("requirement.operationalConstraints", requirement.operationalConstraints());
     }
 
     private String render(Object value) {

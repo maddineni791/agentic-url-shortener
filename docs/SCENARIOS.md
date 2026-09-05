@@ -25,4 +25,6 @@ and revalidates successfully.
 
 `ambiguous-requirement` demonstrates general ambiguity handling. The requirement
 `Make links better.` produces clarification questions and pauses in
-`AWAITING_CLARIFICATION` without mutating source.
+`AWAITING_CLARIFICATION` without mutating source. The ambiguity agent reads missing or
+conflicting dimensions from the normalized requirement artifact, so arbitrary unclear
+requirements can pause even without a special scenario phrase.
