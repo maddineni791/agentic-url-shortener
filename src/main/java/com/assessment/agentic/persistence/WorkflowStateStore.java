@@ -38,4 +38,6 @@ public interface WorkflowStateStore {
     Optional<TaskRecord> findTask(UUID taskId);
 
     Optional<ArtifactRecord> findArtifact(UUID revisionId, String name);
+
+    Optional<ArtifactRecord> findArtifactForWorkflowRevision(UUID workflowId, int revisionNumber, String name);
 }

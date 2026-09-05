@@ -187,6 +187,22 @@ public class JdbcWorkflowStateStore implements WorkflowStateStore {
         ).stream().findFirst();
     }
 
+    @Override
+    public Optional<ArtifactRecord> findArtifactForWorkflowRevision(UUID workflowId, int revisionNumber, String name) {
+        return jdbcTemplate.query(
+            """
+            select a.*
+            from workflow_artifacts a
+            join workflow_revisions r on r.id = a.revision_id
+            where a.workflow_id = ? and r.revision_number = ? and a.name = ?
+            """,
+            this::mapArtifact,
+            workflowId,
+            revisionNumber,
+            name
+        ).stream().findFirst();
+    }
+
     private WorkflowRecord mapWorkflow(ResultSet rs, int rowNum) throws SQLException {
         return new WorkflowRecord(
             rs.getObject("id", UUID.class),

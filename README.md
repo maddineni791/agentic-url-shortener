@@ -39,3 +39,15 @@ On Unix-like shells:
 - [Traceability](docs/TRACEABILITY.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Reviewer Guide](docs/REVIEWER-GUIDE.md)
+
+## Deterministic Local Roles
+
+Checkpoint 3 includes local Basic authentication for platform APIs:
+
+| Username | Password | Role |
+| -------- | -------- | ---- |
+| `operator` | `operator-pass` | `OPERATOR` |
+| `change-approver` | `change-pass` | `CHANGE_APPROVER` |
+| `release-approver` | `release-pass` | `RELEASE_APPROVER` |
+
+OpenAPI is available at `/v3/api-docs` and Swagger UI at `/swagger-ui.html`.

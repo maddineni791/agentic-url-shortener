@@ -1,0 +1,195 @@
+package com.assessment.agentic.api;
+
+import com.assessment.agentic.persistence.ArtifactRecord;
+import com.assessment.agentic.persistence.WorkflowRecord;
+import com.assessment.agentic.persistence.WorkflowStateStore;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
+import java.net.URI;
+import java.security.Principal;
+import java.util.List;
+import java.util.UUID;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
+import org.springframework.http.HttpStatus;
+
+@RestController
+public class WorkflowController {
+
+    private final WorkflowStateStore store;
+
+    public WorkflowController(WorkflowStateStore store) {
+        this.store = store;
+    }
+
+    @PostMapping("/api/workflows")
+    @PreAuthorize("hasRole('OPERATOR')")
+    ResponseEntity<WorkflowResponse> submitWorkflow(@Valid @RequestBody WorkflowSubmissionRequest request, Principal principal) {
+        WorkflowRecord workflow = store.createWorkflow(request.scenarioKey(), request.requirement());
+        var revision = store.createRevision(workflow.id(), 1, request.requirement(), null);
+        store.appendAuditEvent(
+            workflow.id(),
+            revision.id(),
+            null,
+            "workflow.submitted",
+            principal.getName(),
+            "api-submit-" + workflow.id(),
+            request.requirement()
+        );
+        WorkflowRecord updated = store.findWorkflow(workflow.id()).orElseThrow();
+        return ResponseEntity
+            .created(URI.create("/api/workflows/" + workflow.id()))
+            .body(WorkflowResponse.from(updated));
+    }
+
+    @GetMapping("/api/workflows/{workflowId}")
+    @PreAuthorize("hasRole('OPERATOR') or hasRole('CHANGE_APPROVER') or hasRole('RELEASE_APPROVER')")
+    WorkflowResponse workflow(@PathVariable("workflowId") UUID workflowId) {
+        return store.findWorkflow(workflowId)
+            .map(WorkflowResponse::from)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow not found."));
+    }
+
+    @GetMapping("/api/workflows/{workflowId}/tasks")
+    @PreAuthorize("hasRole('OPERATOR') or hasRole('CHANGE_APPROVER') or hasRole('RELEASE_APPROVER')")
+    PageResponse<TaskStatusResponse> tasks(@PathVariable("workflowId") UUID workflowId) {
+        requireWorkflow(workflowId);
+        return new PageResponse<>(List.of(), 0, 50, 0);
+    }
+
+    @GetMapping("/api/workflows/{workflowId}/revisions")
+    @PreAuthorize("hasRole('OPERATOR') or hasRole('CHANGE_APPROVER') or hasRole('RELEASE_APPROVER')")
+    PageResponse<RevisionResponse> revisions(@PathVariable("workflowId") UUID workflowId) {
+        WorkflowRecord workflow = requireWorkflow(workflowId);
+        return new PageResponse<>(List.of(new RevisionResponse(workflow.currentRevision(), "ACTIVE")), 0, 50, 1);
+    }
+
+    @GetMapping("/api/workflows/{workflowId}/artifacts")
+    @PreAuthorize("hasRole('OPERATOR') or hasRole('CHANGE_APPROVER') or hasRole('RELEASE_APPROVER')")
+    PageResponse<ArtifactSummaryResponse> artifacts(@PathVariable("workflowId") UUID workflowId) {
+        requireWorkflow(workflowId);
+        return new PageResponse<>(List.of(), 0, 50, 0);
+    }
+
+    @GetMapping("/api/workflows/{workflowId}/artifacts/{name}")
+    @PreAuthorize("hasRole('OPERATOR') or hasRole('CHANGE_APPROVER') or hasRole('RELEASE_APPROVER')")
+    ArtifactContentResponse artifactContent(@PathVariable("workflowId") UUID workflowId, @PathVariable("name") String name) {
+        WorkflowRecord workflow = requireWorkflow(workflowId);
+        return store.findArtifactForWorkflowRevision(workflow.id(), workflow.currentRevision(), name)
+            .map(ArtifactContentResponse::from)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Artifact not found."));
+    }
+
+    @PostMapping("/api/workflows/{workflowId}/clarifications")
+    @PreAuthorize("hasRole('OPERATOR')")
+    ResponseEntity<ActionAcceptedResponse> clarify(@PathVariable("workflowId") UUID workflowId, @Valid @RequestBody ClarificationRequest request) {
+        requireWorkflow(workflowId);
+        return ResponseEntity.accepted().body(new ActionAcceptedResponse("clarification accepted for later orchestration checkpoint"));
+    }
+
+    @PostMapping("/api/workflows/{workflowId}/approvals/change")
+    @PreAuthorize("hasRole('CHANGE_APPROVER')")
+    ResponseEntity<ActionAcceptedResponse> approveChange(@PathVariable("workflowId") UUID workflowId, @Valid @RequestBody ApprovalRequest request) {
+        requireWorkflow(workflowId);
+        return ResponseEntity.accepted().body(new ActionAcceptedResponse("change approval accepted for later governance checkpoint"));
+    }
+
+    @PostMapping("/api/workflows/{workflowId}/approvals/release")
+    @PreAuthorize("hasRole('RELEASE_APPROVER')")
+    ResponseEntity<ActionAcceptedResponse> approveRelease(@PathVariable("workflowId") UUID workflowId, @Valid @RequestBody ApprovalRequest request) {
+        requireWorkflow(workflowId);
+        return ResponseEntity.accepted().body(new ActionAcceptedResponse("release approval accepted for later governance checkpoint"));
+    }
+
+    @PostMapping("/api/workflows/{workflowId}/safe-stop")
+    @PreAuthorize("hasRole('OPERATOR')")
+    ResponseEntity<ActionAcceptedResponse> safeStop(@PathVariable("workflowId") UUID workflowId) {
+        requireWorkflow(workflowId);
+        return ResponseEntity.accepted().body(new ActionAcceptedResponse("safe stop accepted for later orchestration checkpoint"));
+    }
+
+    @GetMapping("/api/workflows/{workflowId}/policies")
+    @PreAuthorize("hasRole('OPERATOR') or hasRole('CHANGE_APPROVER') or hasRole('RELEASE_APPROVER')")
+    PageResponse<PolicyResponse> policies(@PathVariable("workflowId") UUID workflowId) {
+        requireWorkflow(workflowId);
+        return new PageResponse<>(List.of(), 0, 50, 0);
+    }
+
+    @GetMapping("/api/workflows/{workflowId}/approvals")
+    @PreAuthorize("hasRole('OPERATOR') or hasRole('CHANGE_APPROVER') or hasRole('RELEASE_APPROVER')")
+    PageResponse<ApprovalResponse> approvals(@PathVariable("workflowId") UUID workflowId) {
+        requireWorkflow(workflowId);
+        return new PageResponse<>(List.of(), 0, 50, 0);
+    }
+
+    @GetMapping("/api/workflows/{workflowId}/audit-events")
+    @PreAuthorize("hasRole('OPERATOR') or hasRole('CHANGE_APPROVER') or hasRole('RELEASE_APPROVER')")
+    PageResponse<AuditEventResponse> auditEvents(@PathVariable("workflowId") UUID workflowId) {
+        requireWorkflow(workflowId);
+        return new PageResponse<>(List.of(), 0, 50, 0);
+    }
+
+    private WorkflowRecord requireWorkflow(UUID workflowId) {
+        return store.findWorkflow(workflowId)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow not found."));
+    }
+
+    public record WorkflowSubmissionRequest(
+        @NotBlank @Size(max = 80) String scenarioKey,
+        @NotBlank @Size(max = 20_000) String requirement,
+        @Size(max = 500) String repositoryReference
+    ) {
+    }
+
+    public record WorkflowResponse(UUID id, String externalId, String scenarioKey, String status, int currentRevision) {
+        static WorkflowResponse from(WorkflowRecord workflow) {
+            return new WorkflowResponse(
+                workflow.id(),
+                workflow.externalId(),
+                workflow.scenarioKey(),
+                workflow.status().name(),
+                workflow.currentRevision()
+            );
+        }
+    }
+
+    public record TaskStatusResponse(String taskKey, String status) {
+    }
+
+    public record RevisionResponse(int revisionNumber, String status) {
+    }
+
+    public record ArtifactSummaryResponse(String name, String sha256) {
+    }
+
+    public record ArtifactContentResponse(String name, String mediaType, String sha256, String content) {
+        static ArtifactContentResponse from(ArtifactRecord artifact) {
+            return new ArtifactContentResponse(artifact.name(), artifact.mediaType(), artifact.sha256(), artifact.content());
+        }
+    }
+
+    public record ClarificationRequest(@NotBlank @Size(max = 120) String questionId, @NotBlank @Size(max = 5000) String answer) {
+    }
+
+    public record ApprovalRequest(@NotBlank @Size(min = 64, max = 64) String artifactHash, @Size(max = 1000) String reason) {
+    }
+
+    public record ActionAcceptedResponse(String message) {
+    }
+
+    public record PolicyResponse(String policy, String decision) {
+    }
+
+    public record ApprovalResponse(String gate, String decision) {
+    }
+
+    public record AuditEventResponse(String eventType, String correlationId) {
+    }
+}

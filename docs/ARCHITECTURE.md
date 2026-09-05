@@ -21,3 +21,33 @@ without storing secrets in clear text.
 
 Later checkpoints will connect these tables to the orchestration graph, repository sandbox,
 validation and repair loop, distributed workers, and public REST APIs.
+
+## Checkpoint 3 API And Security
+
+The platform now exposes the first secured REST API surface:
+
+- `GET /api/platform`
+- `GET /api/scenarios`
+- `POST /api/workflows`
+- `GET /api/workflows/{workflowId}`
+- `GET /api/workflows/{workflowId}/tasks`
+- `POST /api/workflows/{workflowId}/clarifications`
+- `POST /api/workflows/{workflowId}/approvals/change`
+- `POST /api/workflows/{workflowId}/approvals/release`
+- `POST /api/workflows/{workflowId}/safe-stop`
+- `GET /api/workflows/{workflowId}/revisions`
+- `GET /api/workflows/{workflowId}/artifacts`
+- `GET /api/workflows/{workflowId}/artifacts/{name}`
+- `GET /api/workflows/{workflowId}/policies`
+- `GET /api/workflows/{workflowId}/approvals`
+- `GET /api/workflows/{workflowId}/audit-events`
+- `GET /v3/api-docs`
+- `GET /swagger-ui.html`
+
+The checkpoint intentionally keeps orchestration lists empty until the graph, policies, and
+evidence producers exist in later checkpoints. Workflow submission is real: it creates a
+durable workflow, revision 1, and a redacted audit event.
+
+Local deterministic evaluation uses Basic authentication with three roles: `OPERATOR`,
+`CHANGE_APPROVER`, and `RELEASE_APPROVER`. Problem responses use RFC 9457
+`application/problem+json` structures with stable `code` and `correlationId` fields.
