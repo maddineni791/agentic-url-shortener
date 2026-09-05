@@ -81,6 +81,8 @@ class ApiSecurityAndWorkflowControllerTests {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.items[?(@.name=='normalized-requirement.json')].sha256").exists())
             .andExpect(jsonPath("$.items[?(@.name=='implementation-proposal.json')].sha256").exists())
+            .andExpect(jsonPath("$.items[?(@.name=='patch-policy.json')].sha256").exists())
+            .andExpect(jsonPath("$.items[?(@.name=='unified-diff.patch')].sha256").exists())
             .andExpect(jsonPath("$.items[?(@.name=='release-readiness.json')].sha256").exists());
 
         mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts/implementation-proposal.json")
@@ -88,10 +90,16 @@ class ApiSecurityAndWorkflowControllerTests {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.content").value(org.hamcrest.Matchers.containsString("fileOperations")));
 
+        mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts/unified-diff.patch")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.content").value(org.hamcrest.Matchers.containsString("GeneratedUrlShortenerSlice")));
+
         mockMvc.perform(get("/api/workflows/" + workflowId + "/audit-events")
                 .with(httpBasic("operator", "operator-pass")))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.items[?(@.eventType=='task.completed')]").isNotEmpty())
+            .andExpect(jsonPath("$.items[?(@.eventType=='patch.applied')]").isNotEmpty())
             .andExpect(jsonPath("$.items[?(@.eventType=='workflow.awaiting-release-approval')]").isNotEmpty());
     }
 

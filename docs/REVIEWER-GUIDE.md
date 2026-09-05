@@ -147,3 +147,23 @@ Validation command:
 ```
 
 Expected test result for checkpoint 6: 24 tests, 0 failures, 0 errors, 0 skipped.
+
+## Checkpoint 7
+
+Expected behavior:
+
+- The implementation and test proposals are not ignored; they are read back from persisted
+  artifacts and applied in an isolated workspace.
+- Patch policy rejects unsafe paths, unsupported extensions, duplicate operations, content
+  over limits, and update/delete operations without expected hashes.
+- Successful workflows expose `patch-policy.json`, `applied-file-operations.json`,
+  `unified-diff.patch`, and `source-manifest.json`.
+- Audit events include `patch.applied` for successful policy-controlled mutation.
+
+Validation command:
+
+```powershell
+.\mvnw.cmd clean verify
+```
+
+Expected test result for checkpoint 7: 26 tests, 0 failures, 0 errors, 0 skipped.

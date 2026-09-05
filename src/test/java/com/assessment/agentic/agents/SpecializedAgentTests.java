@@ -88,10 +88,10 @@ class SpecializedAgentTests {
 
         assertThat(result.output().tasks())
             .extracting(TaskPlan.PlannedTask::id)
-            .contains("analyze-repository", "design-change", "implement-change", "generate-tests", "security-risk-review", "release-readiness");
+            .contains("analyze-repository", "design-change", "implement-change", "generate-tests", "apply-generated-patch", "security-risk-review", "release-readiness");
         assertThat(result.output().tasks())
             .anySatisfy(planned -> {
-                assertThat(planned.id()).isEqualTo("synchronize-patch");
+                assertThat(planned.id()).isEqualTo("apply-generated-patch");
                 assertThat(planned.dependencies()).containsExactlyInAnyOrder("implement-change", "generate-tests");
             });
         assertThat(result.output().parallelGroups()).isNotEmpty();

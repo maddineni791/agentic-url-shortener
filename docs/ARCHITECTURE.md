@@ -97,7 +97,7 @@ hash-linked `AgentArtifact`. The deterministic provider remains keyless, but it 
 same contracts as the OpenAI provider.
 
 `TaskDecompositionAgent` produces executor tasks such as `analyze-repository`,
-`design-change`, `implement-change`, `generate-tests`, `synchronize-patch`,
+`design-change`, `implement-change`, `generate-tests`, `apply-generated-patch`,
 `security-risk-review`, and `release-readiness`, including dependencies and parallel work
 groups. `ImplementationAgent`, `TestGenerationAgent`, and `RepairAgent` produce structured
 `FileOperationProposal` objects with operation type, normalized relative path, complete
@@ -145,3 +145,35 @@ The REST evidence APIs now expose real durable data:
 This checkpoint still does not mutate a submitted repository. Repository isolation,
 policy-controlled patch application, validation, repair, rollback, distributed leases, and
 restart recovery remain later checkpoints.
+
+## Checkpoint 7 Governed Isolated Patch Application
+
+Generated implementation and test proposals now flow through a policy-controlled repository
+mutation step. The orchestrator reads `implementation-proposal.json` and
+`test-proposal.json`, combines the proposed file operations, and sends them to
+`IsolatedRepositoryService`.
+
+The repository tool creates a fresh isolated workspace under the configured
+`agentic.workspace.root` directory, which defaults to `target/agent-workspaces`. It seeds a
+minimal baseline, applies only policy-accepted operations, and never writes to the
+submitted source repository.
+
+Patch policy currently enforces:
+
+- normalized relative paths with forward slashes;
+- absolute-path and traversal rejection;
+- duplicate-operation rejection;
+- approved file extensions;
+- configured operation-count and file-size limits;
+- expected SHA-256 hashes for update and delete operations.
+
+The patch step persists reviewer-visible evidence:
+
+- `patch-policy.json`;
+- `applied-file-operations.json`;
+- `unified-diff.patch`;
+- `source-manifest.json`.
+
+The audit stream records `patch.applied` or `patch.policy-rejected`. Validation still does
+not execute the generated repository build; fixed Maven validation, failure diagnosis,
+repair, retry, and rollback are the next checkpoint.

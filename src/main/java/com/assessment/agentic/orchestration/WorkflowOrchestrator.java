@@ -9,6 +9,7 @@ import com.assessment.agentic.agents.AmbiguityClarificationAgent;
 import com.assessment.agentic.agents.ArchitectureAgent;
 import com.assessment.agentic.agents.DocumentationAgent;
 import com.assessment.agentic.agents.ExecutionContext;
+import com.assessment.agentic.agents.FileOperationProposalSet;
 import com.assessment.agentic.agents.ImplementationAgent;
 import com.assessment.agentic.agents.ReleaseReadinessAgent;
 import com.assessment.agentic.agents.RepositoryAnalysisAgent;
@@ -24,6 +25,8 @@ import com.assessment.agentic.persistence.TaskStatus;
 import com.assessment.agentic.persistence.WorkflowRecord;
 import com.assessment.agentic.persistence.WorkflowStateStore;
 import com.assessment.agentic.persistence.WorkflowStatus;
+import com.assessment.agentic.repository.IsolatedRepositoryService;
+import com.assessment.agentic.repository.PatchApplicationResult;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.LinkedHashMap;
@@ -46,6 +49,7 @@ public class WorkflowOrchestrator {
     private final DocumentationAgent documentationAgent;
     private final SecurityRiskReviewAgent securityRiskReviewAgent;
     private final ReleaseReadinessAgent releaseReadinessAgent;
+    private final IsolatedRepositoryService isolatedRepositoryService;
     private final ObjectMapper objectMapper;
 
     public WorkflowOrchestrator(
@@ -60,6 +64,7 @@ public class WorkflowOrchestrator {
         DocumentationAgent documentationAgent,
         SecurityRiskReviewAgent securityRiskReviewAgent,
         ReleaseReadinessAgent releaseReadinessAgent,
+        IsolatedRepositoryService isolatedRepositoryService,
         ObjectMapper objectMapper
     ) {
         this.store = store;
@@ -73,6 +78,7 @@ public class WorkflowOrchestrator {
         this.documentationAgent = documentationAgent;
         this.securityRiskReviewAgent = securityRiskReviewAgent;
         this.releaseReadinessAgent = releaseReadinessAgent;
+        this.isolatedRepositoryService = isolatedRepositoryService;
         this.objectMapper = objectMapper;
     }
 
@@ -106,7 +112,8 @@ public class WorkflowOrchestrator {
             task -> implementationAgent.execute(task, contextWithArtifacts(workflow, revision)));
         run("generate-tests", AgentRole.TEST_ENGINEER, List.of("design-change"), workflow, revision, actor, correlationId,
             task -> testGenerationAgent.execute(task, contextWithArtifacts(workflow, revision)));
-        run("document-outcome", AgentRole.DOCUMENTATION_WRITER, List.of("implement-change", "generate-tests"), workflow, revision, actor, correlationId,
+        applyGeneratedPatch(workflow, revision, actor, correlationId);
+        run("document-outcome", AgentRole.DOCUMENTATION_WRITER, List.of("apply-generated-patch"), workflow, revision, actor, correlationId,
             task -> documentationAgent.execute(task, contextWithArtifacts(workflow, revision)));
         run("security-risk-review", AgentRole.SECURITY_REVIEWER, List.of("design-change"), workflow, revision, actor, correlationId,
             task -> securityRiskReviewAgent.execute(task, contextWithArtifacts(workflow, revision)));
@@ -115,6 +122,49 @@ public class WorkflowOrchestrator {
         store.updateWorkflowStatus(workflow.id(), WorkflowStatus.AWAITING_RELEASE_APPROVAL);
         store.appendAuditEvent(workflow.id(), revision.id(), null, "workflow.awaiting-release-approval", actor, correlationId,
             "Agent execution completed and exact-evidence release approval is required.");
+    }
+
+    private TaskRecord applyGeneratedPatch(WorkflowRecord workflow, RevisionRecord revision, String actor, String correlationId) {
+        TaskRecord task = existingTask(workflow, revision, "apply-generated-patch");
+        if (task == null) {
+            task = store.createTask(workflow.id(), revision.id(), "apply-generated-patch", "PATCH_APPLIER",
+                write(List.of("implement-change", "generate-tests")));
+        }
+        store.updateTaskStatus(task.id(), TaskStatus.CLAIMED);
+        store.incrementTaskAttempt(task.id());
+        store.appendAuditEvent(workflow.id(), revision.id(), task.id(), "task.claimed", actor, correlationId,
+            write(Map.of("taskKey", task.taskKey(), "agent", "PATCH_APPLIER")));
+        store.updateTaskStatus(task.id(), TaskStatus.RUNNING);
+
+        FileOperationProposalSet implementation = read(store.findArtifact(revision.id(), "implementation-proposal.json").orElseThrow().content(),
+            FileOperationProposalSet.class);
+        FileOperationProposalSet tests = read(store.findArtifact(revision.id(), "test-proposal.json").orElseThrow().content(),
+            FileOperationProposalSet.class);
+        PatchApplicationResult result = isolatedRepositoryService.apply(workflow.id().toString(), revision.revisionNumber(), List.of(implementation, tests));
+        persistPatchEvidence(workflow, revision, task, result);
+        if (result.policyDecision().allowed()) {
+            store.updateTaskStatus(task.id(), TaskStatus.SUCCEEDED);
+            store.appendAuditEvent(workflow.id(), revision.id(), task.id(), "patch.applied", "PATCH_APPLIER", correlationId,
+                write(Map.of("changedFiles", result.changedFiles(), "workspace", result.workspacePath())));
+        } else {
+            store.updateTaskStatus(task.id(), TaskStatus.FAILED);
+            store.updateWorkflowStatus(workflow.id(), WorkflowStatus.FAILED);
+            store.appendAuditEvent(workflow.id(), revision.id(), task.id(), "patch.policy-rejected", "PATCH_APPLIER", correlationId,
+                write(result.policyDecision()));
+        }
+        return store.findTask(task.id()).orElseThrow();
+    }
+
+    private void persistPatchEvidence(WorkflowRecord workflow, RevisionRecord revision, TaskRecord task, PatchApplicationResult result) {
+        store.createArtifact(workflow.id(), revision.id(), task.id(), "patch-policy.json", "application/json",
+            write(result.policyDecision()), write(Map.of("producingTask", task.taskKey())));
+        store.createArtifact(workflow.id(), revision.id(), task.id(), "applied-file-operations.json", "application/json",
+            write(Map.of("changedFiles", result.changedFiles(), "workspacePath", result.workspacePath())), write(Map.of("producingTask", task.taskKey())));
+        store.createArtifact(workflow.id(), revision.id(), task.id(), "unified-diff.patch", "text/x-diff",
+            result.unifiedDiff(), write(Map.of("producingTask", task.taskKey())));
+        store.createArtifact(workflow.id(), revision.id(), task.id(), "source-manifest.json", "application/json",
+            result.policyDecision().allowed() ? isolatedRepositoryService.manifestJson(result.workspacePath()) : "[]",
+            write(Map.of("baselineManifestHash", result.baselineManifestHash(), "appliedManifestHash", result.appliedManifestHash())));
     }
 
     private TaskRecord run(
