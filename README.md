@@ -24,6 +24,10 @@ Java 21 is required.
 .\mvnw.cmd clean verify
 ```
 
+The default runtime profile expects PostgreSQL at
+`jdbc:postgresql://localhost:5432/agentic` with username/password `agentic`/`agentic`.
+Tests use an H2 database in PostgreSQL compatibility mode.
+
 On Unix-like shells:
 
 ```bash

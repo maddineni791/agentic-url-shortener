@@ -17,5 +17,19 @@ Validation command:
 .\mvnw.cmd clean verify
 ```
 
-The current workspace does not include `maven-wrapper.jar`; generate it with Maven or allow
-the wrapper jar to be added in a later environment where Maven/network access is available.
+## Checkpoint 2
+
+Expected behavior:
+
+- Flyway applies the durable workflow schema.
+- The persistence adapter can create and read workflows, revisions, tasks, artifacts, and
+  audit events.
+- Audit payloads redact common secret assignments while retaining an original payload hash.
+
+Validation command:
+
+```powershell
+.\mvnw.cmd clean verify
+```
+
+Expected test result for checkpoint 2: 4 tests, 0 failures, 0 errors, 0 skipped.

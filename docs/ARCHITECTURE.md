@@ -7,6 +7,17 @@ generates implementation and test proposals through provider-neutral agents, app
 approved patches in isolated workspaces, validates with fixed build capabilities, performs
 bounded repair, and exposes durable evidence for human approval.
 
-Checkpoint 1 contains only the application foundation. Later checkpoints add durable
-persistence, orchestration, agents, repository governance, validation, repair, metrics,
-distributed execution, URL-shortener behavior, and production packaging.
+## Checkpoint 2 Persistence
+
+The platform now has a durable state foundation managed by Flyway. The schema includes
+workflows, workflow revisions, workflow tasks, artifacts, validation attempts, approvals,
+and audit events. The Java adapter uses Spring JDBC rather than hidden ORM state so later
+orchestration code can make state transitions, leases, fencing tokens, and approval
+invalidation explicit.
+
+Artifact and audit payloads are hash-linked with SHA-256. Audit events persist a redacted
+payload plus a hash of the bounded original payload, which lets reviewers verify lineage
+without storing secrets in clear text.
+
+Later checkpoints will connect these tables to the orchestration graph, repository sandbox,
+validation and repair loop, distributed workers, and public REST APIs.
