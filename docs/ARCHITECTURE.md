@@ -45,6 +45,13 @@ commands. Humans approve exact current evidence by SHA-256 hash.
 If ambiguity analysis determines that the requirement is materially underspecified, the
 workflow transitions to `AWAITING_CLARIFICATION` and no patch artifacts are created.
 
+The deterministic implementation and test agents generate the actual file operations that
+are later applied. For the URL-shortener scenarios, the generated implementation includes a
+service slice, domain record, REST controller, request DTO, and behavior tests for create,
+redirect, analytics, URL validation, deactivation, and regional codes. Brownfield and
+greenfield scenarios share the same schema and patch pipeline while recording different
+generation modes in the generated evidence.
+
 ## Evidence
 
 Artifacts are persisted with SHA-256 hashes and lineage. Reviewer-visible artifacts include:

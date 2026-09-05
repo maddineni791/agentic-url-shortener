@@ -2,10 +2,10 @@
 
 This repository contains a runnable Java 21 Spring Boot platform for the Agentic-Proficient
 Software Engineer assessment. The platform exposes REST APIs that accept a software
-requirement, run deterministic or OpenAI-backed agents, generate implementation and test
-file-operation proposals, apply those proposals inside isolated workspaces, run real Maven
-validation, repair a deliberate failure scenario, expose review evidence, and require
-exact-hash human approval before release completion.
+requirement, run deterministic or OpenAI-backed agents, generate multi-file implementation
+and test file-operation proposals, apply those proposals inside isolated workspaces, run
+real Maven validation, repair a deliberate failure scenario, expose review evidence, and
+require exact-hash human approval before release completion.
 
 The concrete product slice is a URL shortener with PostgreSQL persistence, Flyway
 migrations, RFC 9457 errors, OpenAPI, health probes, Prometheus metrics, rate limiting,
@@ -128,6 +128,15 @@ Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/artifacts" -C
 Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/validation-attempts" -Credential $operator
 Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/policies" -Credential $operator
 ```
+
+The deterministic implementation agent proposes a generated URL-shortener slice instead of
+a status-only marker. The proposal includes:
+
+- `src/main/java/com/assessment/generated/urlshortener/GeneratedUrlShortenerSlice.java`
+- `src/main/java/com/assessment/generated/urlshortener/GeneratedShortUrl.java`
+- `src/main/java/com/assessment/generated/urlshortener/GeneratedUrlShortenerController.java`
+- `src/main/java/com/assessment/generated/urlshortener/GeneratedUrlShortenerRequest.java`
+- `src/test/java/com/assessment/generated/urlshortener/GeneratedUrlShortenerSliceTests.java`
 
 Approve release with exact current evidence:
 

@@ -106,17 +106,19 @@ class SpecializedAgentTests {
         AgentExecutionResult<FileOperationProposalSet> tests = testGenerationAgent.execute(
             task("generate-tests", AgentRole.TEST_ENGINEER, "Generate tests"), context);
 
-        assertThat(implementation.output().fileOperations()).singleElement()
-            .satisfies(operation -> {
+        assertThat(implementation.output().fileOperations()).hasSize(4);
+        assertThat(implementation.output().fileOperations())
+            .allSatisfy(operation -> {
                 assertThat(operation.operationType()).isEqualTo("CREATE");
                 assertThat(operation.normalizedRelativePath()).startsWith("src/main/java/");
-                assertThat(operation.completeProposedContent()).contains("GeneratedUrlShortenerSlice");
                 assertThat(operation.taskId()).isEqualTo("implement-change");
             });
+        assertThat(implementation.output().fileOperations())
+            .anySatisfy(operation -> assertThat(operation.completeProposedContent()).contains("GeneratedUrlShortenerSlice", "redirect", "analytics"));
         assertThat(tests.output().fileOperations()).singleElement()
             .satisfies(operation -> {
                 assertThat(operation.normalizedRelativePath()).startsWith("src/test/java/");
-                assertThat(operation.completeProposedContent()).contains("@Test");
+                assertThat(operation.completeProposedContent()).contains("@Test", "createsRedirectsAndReportsAnalytics", "rejectsUnsafeUrlsAndDeactivatedRedirects");
             });
     }
 

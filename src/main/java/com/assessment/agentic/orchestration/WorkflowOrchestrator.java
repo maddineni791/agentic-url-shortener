@@ -101,7 +101,8 @@ public class WorkflowOrchestrator {
     @Transactional
     public void startRevision(WorkflowRecord workflow, RevisionRecord revision, String actor, String correlationId) {
         store.updateWorkflowStatus(workflow.id(), WorkflowStatus.RUNNING);
-        ExecutionContext context = new ExecutionContext(workflow.id().toString(), revision.revisionNumber(), workflow.originalRequirement(), new LinkedHashMap<>());
+        ExecutionContext context = new ExecutionContext(workflow.id().toString(), revision.revisionNumber(), workflow.originalRequirement(),
+            Map.of("scenarioKey", workflow.scenarioKey()));
         TaskRecord requirementTask = run("understand-requirement", AgentRole.REQUIREMENT_INTERPRETER, List.of(), workflow, revision, actor, correlationId,
             task -> requirementAgent.execute(task, context));
         TaskRecord ambiguityTask = run("analyze-ambiguity", AgentRole.AMBIGUITY_ANALYST, List.of(requirementTask.taskKey()), workflow, revision, actor, correlationId,
@@ -348,6 +349,7 @@ public class WorkflowOrchestrator {
 
     private ExecutionContext contextWithArtifacts(WorkflowRecord workflow, RevisionRecord revision) {
         Map<String, String> artifacts = new LinkedHashMap<>();
+        artifacts.put("scenarioKey", workflow.scenarioKey());
         for (ArtifactRecord artifact : store.listArtifacts(workflow.id(), revision.id())) {
             artifacts.put(artifact.name(), artifact.sha256());
         }

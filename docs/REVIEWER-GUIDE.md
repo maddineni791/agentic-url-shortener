@@ -8,8 +8,8 @@ This guide demonstrates the implemented platform behavior with PowerShell comman
 .\mvnw.cmd clean verify
 ```
 
-Expected result: build success, 42 tests passing, Flyway migrations validated, and JaCoCo
-report generation.
+Expected result: build success, all tests passing, Flyway migrations validated, and JaCoCo
+checks passing.
 
 ## Start The App
 
@@ -149,6 +149,11 @@ Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/artifacts/uni
 Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/artifacts/source-manifest.json" -Credential $operator
 Invoke-RestMethod "http://localhost:8080/api/workflows/$workflowId/artifacts/engineering-outcome.json" -Credential $operator
 ```
+
+The implementation proposal should contain generated production files under
+`src/main/java/com/assessment/generated/urlshortener/` and the test proposal should contain
+`GeneratedUrlShortenerSliceTests`. These generated files are the patch applied to the
+isolated workspace; they are not manually supplied node-completion text.
 
 ## Idempotency
 

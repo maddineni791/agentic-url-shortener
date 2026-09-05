@@ -138,7 +138,15 @@ class ApiSecurityAndWorkflowControllerTests {
         mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts/implementation-proposal.json")
                 .with(httpBasic("operator", "operator-pass")))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.content").value(org.hamcrest.Matchers.containsString("fileOperations")));
+            .andExpect(jsonPath("$.content").value(org.hamcrest.Matchers.containsString("fileOperations")))
+            .andExpect(jsonPath("$.content").value(org.hamcrest.Matchers.containsString("GeneratedUrlShortenerController")))
+            .andExpect(jsonPath("$.content").value(org.hamcrest.Matchers.containsString("GeneratedShortUrl")));
+
+        mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts/test-proposal.json")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.content").value(org.hamcrest.Matchers.containsString("createsRedirectsAndReportsAnalytics")))
+            .andExpect(jsonPath("$.content").value(org.hamcrest.Matchers.containsString("rejectsUnsafeUrlsAndDeactivatedRedirects")));
 
         mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts/unified-diff.patch")
                 .with(httpBasic("operator", "operator-pass")))

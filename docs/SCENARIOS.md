@@ -4,14 +4,16 @@ The scenario catalog is available at `GET /api/scenarios`.
 
 ## Brownfield Analytics
 
-`brownfield-analytics` runs the normal deterministic workflow and generates URL-shortener
-implementation, test, validation, risk, release, and engineering-outcome artifacts inside
-an isolated workspace.
+`brownfield-analytics` runs the normal deterministic workflow and generates a
+URL-shortener analytics enhancement proposal, generated tests, validation evidence, risk
+review, release-readiness output, and an engineering outcome inside an isolated workspace.
+The generated service evidence records `BROWNFIELD_ANALYTICS_ENHANCEMENT`.
 
 ## Greenfield URL Shortener
 
 `greenfield-url-shortener` uses the same agent contracts and patch pipeline to generate a
-runnable URL-shortener vertical slice in an isolated workspace.
+runnable URL-shortener vertical slice in an isolated workspace. The generated service
+evidence records `GREENFIELD_VERTICAL_SLICE`.
 
 ## Repair Demonstration
 
