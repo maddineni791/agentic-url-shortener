@@ -228,3 +228,44 @@ Validation command:
 ```
 
 Expected test result for checkpoint 10: 35 tests, 0 failures, 0 errors, 0 skipped.
+
+## Checkpoint 11
+
+Expected behavior:
+
+- `POST /api/workflows` accepts an `Idempotency-Key` header.
+- Replaying the same authenticated request and idempotency key returns the original
+  workflow instead of creating duplicate workflow state.
+- Reusing the same key with different request content returns HTTP 409 Problem Details
+  with code `CONFLICT`.
+- Workflow tasks have database-backed lease owner, lease expiry, and fencing-token state.
+- A task can be claimed only when unleased or expired.
+- Heartbeat and completion require the current lease owner and fencing token, so stale
+  workers cannot complete a task after losing ownership.
+- `GET /api/workflows/{workflowId}/tasks` exposes lease and fencing fields for reviewer
+  evidence.
+
+Example idempotent submission:
+
+```powershell
+$body = @{
+  scenarioKey = "greenfield-url-shortener"
+  requirement = "Build a URL shortener with redirect analytics."
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Uri http://localhost:8080/api/workflows `
+  -Method Post `
+  -Credential (New-Object pscredential "operator",(ConvertTo-SecureString "operator-pass" -AsPlainText -Force)) `
+  -Headers @{ "Idempotency-Key" = "reviewer-submit-001" } `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+Validation command:
+
+```powershell
+.\mvnw.cmd clean verify
+```
+
+Expected test result for checkpoint 11: 38 tests, 0 failures, 0 errors, 0 skipped.

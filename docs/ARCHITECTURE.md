@@ -250,3 +250,26 @@ Commit 10 keeps production controls inside deterministic Java policy and reposit
 separate from agent reasoning. The remaining URL-shortener depth is mostly documentation
 and optional PostgreSQL container acceptance; the next checkpoints return to platform
 scenarios, governance, metrics, distributed recovery, packaging, and final acceptance.
+
+## Checkpoint 11 Idempotency And Lease Fencing
+
+Workflow submission now supports an `Idempotency-Key` header. The platform stores the
+authenticated actor, key, normalized request hash, response status, and workflow ID in
+PostgreSQL through Flyway migration `V3__idempotency_and_leases.sql`. Replaying the same
+key with the same request returns the original workflow instead of creating duplicate
+engineering work. Reusing the same key for different request content returns HTTP 409
+Problem Details with code `CONFLICT`.
+
+The task store now exposes database-backed lease primitives for the distributed worker
+model required by the assessment:
+
+- `claimTask` assigns an owner only when the task is unleased or expired and increments a
+  monotonic fencing token;
+- `heartbeatTaskLease` extends only the current owner/token pair;
+- `completeTaskWithFence` rejects stale completions whose owner or fencing token no longer
+  matches.
+
+Task status APIs now include lease owner, lease expiry, and fencing token so reviewers can
+inspect distributed-execution state. Commit 11 proves the persistence and API contracts;
+automatic background recovery and multi-instance scheduled claims are still planned for the
+distributed recovery checkpoint.

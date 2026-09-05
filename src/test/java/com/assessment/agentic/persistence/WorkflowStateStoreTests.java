@@ -63,6 +63,54 @@ class WorkflowStateStoreTests {
         assertThat(auditEvent.originalPayloadSha256()).hasSize(64);
     }
 
+    @Test
+    void storesIdempotencyRecordsForReplayDetection() {
+        WorkflowRecord workflow = store.createWorkflow("greenfield", "Build a URL shortener");
+
+        IdempotencyRecord record = store.createIdempotencyRecord(
+            "operator",
+            "submit-1",
+            Hashing.sha256("request-body"),
+            workflow.id(),
+            201
+        );
+
+        assertThat(record.actor()).isEqualTo("operator");
+        assertThat(record.idempotencyKey()).isEqualTo("submit-1");
+        assertThat(record.requestHash()).hasSize(64);
+        assertThat(record.workflowId()).isEqualTo(workflow.id());
+        assertThat(store.findIdempotencyRecord("operator", "submit-1")).contains(record);
+        assertThat(store.findIdempotencyRecord("operator", "missing")).isEmpty();
+    }
+
+    @Test
+    void taskLeaseRequiresCurrentOwnerAndFencingToken() {
+        WorkflowRecord workflow = store.createWorkflow("greenfield", "Build a URL shortener");
+        RevisionRecord revision = store.createRevision(workflow.id(), 1, workflow.originalRequirement(), null);
+        TaskRecord task = store.createTask(
+            workflow.id(),
+            revision.id(),
+            "implement-change",
+            "IMPLEMENTER",
+            "[]"
+        );
+
+        TaskRecord claimed = store.claimTask(task.id(), "worker-a", 30).orElseThrow();
+
+        assertThat(claimed.leaseOwner()).isEqualTo("worker-a");
+        assertThat(claimed.leaseExpiresAt()).isNotNull();
+        assertThat(claimed.fencingToken()).isEqualTo(1);
+        assertThat(store.claimTask(task.id(), "worker-b", 30)).isEmpty();
+        assertThat(store.heartbeatTaskLease(task.id(), "worker-b", claimed.fencingToken(), 30)).isEmpty();
+        assertThat(store.completeTaskWithFence(task.id(), "worker-a", claimed.fencingToken() - 1, TaskStatus.SUCCEEDED)).isFalse();
+
+        assertThat(store.heartbeatTaskLease(task.id(), "worker-a", claimed.fencingToken(), 30)).isPresent();
+        assertThat(store.completeTaskWithFence(task.id(), "worker-a", claimed.fencingToken(), TaskStatus.SUCCEEDED)).isTrue();
+        TaskRecord completed = store.findTask(task.id()).orElseThrow();
+        assertThat(completed.status()).isEqualTo(TaskStatus.SUCCEEDED);
+        assertThat(completed.leaseOwner()).isNull();
+    }
+
     @TestConfiguration
     static class FixedClockConfiguration {
 

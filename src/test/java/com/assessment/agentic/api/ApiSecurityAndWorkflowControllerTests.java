@@ -53,6 +53,47 @@ class ApiSecurityAndWorkflowControllerTests {
     }
 
     @Test
+    void workflowSubmissionIdempotencyReplaysOriginalWorkflowAndRejectsConflicts() throws Exception {
+        String requestBody = """
+            {
+              "scenarioKey": "greenfield-url-shortener",
+              "requirement": "Build a URL shortener API with redirect endpoint, PostgreSQL persistence, rate limiting, blocked host validation, expiry, retention, and UTC analytics."
+            }
+            """;
+        String firstResponse = mockMvc.perform(post("/api/workflows")
+                .with(httpBasic("operator", "operator-pass"))
+                .header("Idempotency-Key", "workflow-submit-commit-11")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(requestBody))
+            .andExpect(status().isCreated())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+        String workflowId = firstResponse.replaceAll(".*\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+
+        mockMvc.perform(post("/api/workflows")
+                .with(httpBasic("operator", "operator-pass"))
+                .header("Idempotency-Key", "workflow-submit-commit-11")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(requestBody))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.id").value(workflowId));
+
+        mockMvc.perform(post("/api/workflows")
+                .with(httpBasic("operator", "operator-pass"))
+                .header("Idempotency-Key", "workflow-submit-commit-11")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "scenarioKey": "greenfield-url-shortener",
+                      "requirement": "Build a different workflow with the same idempotency key."
+                    }
+                    """))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("CONFLICT"));
+    }
+
+    @Test
     void submissionRunsAgentsAndExposesGeneratedEvidence() throws Exception {
         String workflowJson = mockMvc.perform(post("/api/workflows")
                 .with(httpBasic("operator", "operator-pass"))

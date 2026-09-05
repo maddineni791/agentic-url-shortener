@@ -49,6 +49,30 @@ public class JdbcWorkflowStateStore implements WorkflowStateStore {
     }
 
     @Override
+    public IdempotencyRecord createIdempotencyRecord(
+        String actor,
+        String idempotencyKey,
+        String requestHash,
+        UUID workflowId,
+        int responseStatus
+    ) {
+        jdbcTemplate.update(
+            """
+            insert into idempotency_keys
+            (actor, idempotency_key, request_hash, workflow_id, response_status, created_at)
+            values (?, ?, ?, ?, ?, ?)
+            """,
+            actor,
+            idempotencyKey,
+            requestHash,
+            workflowId,
+            responseStatus,
+            Timestamp.from(clock.instant())
+        );
+        return findIdempotencyRecord(actor, idempotencyKey).orElseThrow();
+    }
+
+    @Override
     @Transactional
     public RevisionRecord createRevision(UUID workflowId, int revisionNumber, String requirementText, UUID parentRevisionId) {
         UUID id = UUID.randomUUID();
@@ -218,6 +242,73 @@ public class JdbcWorkflowStateStore implements WorkflowStateStore {
     }
 
     @Override
+    @Transactional
+    public Optional<TaskRecord> claimTask(UUID taskId, String leaseOwner, int leaseSeconds) {
+        Instant now = clock.instant();
+        Instant expiresAt = now.plusSeconds(leaseSeconds);
+        int updated = jdbcTemplate.update(
+            """
+            update workflow_tasks
+            set lease_owner = ?, lease_expires_at = ?, fencing_token = fencing_token + 1, updated_at = ?
+            where id = ?
+              and status in ('PENDING', 'RUNNING')
+              and (lease_owner is null or lease_expires_at <= ?)
+            """,
+            leaseOwner,
+            Timestamp.from(expiresAt),
+            Timestamp.from(now),
+            taskId,
+            Timestamp.from(now)
+        );
+        if (updated == 0) {
+            return Optional.empty();
+        }
+        return findTask(taskId);
+    }
+
+    @Override
+    @Transactional
+    public Optional<TaskRecord> heartbeatTaskLease(UUID taskId, String leaseOwner, long fencingToken, int leaseSeconds) {
+        Instant now = clock.instant();
+        Instant expiresAt = now.plusSeconds(leaseSeconds);
+        int updated = jdbcTemplate.update(
+            """
+            update workflow_tasks
+            set lease_expires_at = ?, updated_at = ?
+            where id = ? and lease_owner = ? and fencing_token = ?
+            """,
+            Timestamp.from(expiresAt),
+            Timestamp.from(now),
+            taskId,
+            leaseOwner,
+            fencingToken
+        );
+        if (updated == 0) {
+            return Optional.empty();
+        }
+        return findTask(taskId);
+    }
+
+    @Override
+    @Transactional
+    public boolean completeTaskWithFence(UUID taskId, String leaseOwner, long fencingToken, TaskStatus terminalStatus) {
+        Instant now = clock.instant();
+        int updated = jdbcTemplate.update(
+            """
+            update workflow_tasks
+            set status = ?, lease_owner = null, lease_expires_at = null, updated_at = ?
+            where id = ? and lease_owner = ? and fencing_token = ?
+            """,
+            terminalStatus.name(),
+            Timestamp.from(now),
+            taskId,
+            leaseOwner,
+            fencingToken
+        );
+        return updated == 1;
+    }
+
+    @Override
     public Optional<ArtifactRecord> findArtifact(UUID revisionId, String name) {
         return jdbcTemplate.query(
             "select * from workflow_artifacts where revision_id = ? and name = ?",
@@ -250,6 +341,16 @@ public class JdbcWorkflowStateStore implements WorkflowStateStore {
             this::mapRevision,
             workflowId,
             revisionNumber
+        ).stream().findFirst();
+    }
+
+    @Override
+    public Optional<IdempotencyRecord> findIdempotencyRecord(String actor, String idempotencyKey) {
+        return jdbcTemplate.query(
+            "select * from idempotency_keys where actor = ? and idempotency_key = ?",
+            this::mapIdempotencyRecord,
+            actor,
+            idempotencyKey
         ).stream().findFirst();
     }
 
@@ -395,6 +496,17 @@ public class JdbcWorkflowStateStore implements WorkflowStateStore {
             rs.getString("correlation_id"),
             rs.getString("redacted_payload"),
             rs.getString("original_payload_sha256"),
+            rs.getTimestamp("created_at").toInstant()
+        );
+    }
+
+    private IdempotencyRecord mapIdempotencyRecord(ResultSet rs, int rowNum) throws SQLException {
+        return new IdempotencyRecord(
+            rs.getString("actor"),
+            rs.getString("idempotency_key"),
+            rs.getString("request_hash"),
+            rs.getObject("workflow_id", UUID.class),
+            rs.getInt("response_status"),
             rs.getTimestamp("created_at").toInstant()
         );
     }

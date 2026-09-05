@@ -35,7 +35,7 @@ public class ApiExceptionHandler {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(ex.getStatusCode(), ex.getReason());
         problem.setType(URI.create("https://agentic-url-shortener.local/problems/request-rejected"));
         problem.setTitle("Request rejected");
-        problem.setProperty("code", "REQUEST_REJECTED");
+        problem.setProperty("code", ex.getStatusCode().value() == 409 ? "CONFLICT" : "REQUEST_REJECTED");
         problem.setProperty("correlationId", correlationId(request));
         return problem;
     }

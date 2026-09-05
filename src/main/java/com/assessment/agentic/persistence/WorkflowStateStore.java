@@ -8,6 +8,10 @@ public interface WorkflowStateStore {
 
     WorkflowRecord createWorkflow(String scenarioKey, String originalRequirement);
 
+    IdempotencyRecord createIdempotencyRecord(String actor, String idempotencyKey, String requestHash, UUID workflowId, int responseStatus);
+
+    Optional<IdempotencyRecord> findIdempotencyRecord(String actor, String idempotencyKey);
+
     RevisionRecord createRevision(UUID workflowId, int revisionNumber, String requirementText, UUID parentRevisionId);
 
     TaskRecord createTask(UUID workflowId, UUID revisionId, String taskKey, String taskType, String dependsOnJson);
@@ -51,6 +55,12 @@ public interface WorkflowStateStore {
     Optional<RevisionRecord> findRevision(UUID revisionId);
 
     Optional<TaskRecord> findTask(UUID taskId);
+
+    Optional<TaskRecord> claimTask(UUID taskId, String leaseOwner, int leaseSeconds);
+
+    Optional<TaskRecord> heartbeatTaskLease(UUID taskId, String leaseOwner, long fencingToken, int leaseSeconds);
+
+    boolean completeTaskWithFence(UUID taskId, String leaseOwner, long fencingToken, TaskStatus terminalStatus);
 
     Optional<ArtifactRecord> findArtifact(UUID revisionId, String name);
 

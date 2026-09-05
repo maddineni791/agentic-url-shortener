@@ -3,6 +3,8 @@ package com.assessment.agentic.api;
 import com.assessment.agentic.orchestration.WorkflowOrchestrator;
 import com.assessment.agentic.persistence.ArtifactRecord;
 import com.assessment.agentic.persistence.AuditEventRecord;
+import com.assessment.agentic.persistence.Hashing;
+import com.assessment.agentic.persistence.IdempotencyRecord;
 import com.assessment.agentic.persistence.RevisionRecord;
 import com.assessment.agentic.persistence.TaskRecord;
 import com.assessment.agentic.persistence.ValidationAttemptRecord;
@@ -21,6 +23,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.http.HttpStatus;
@@ -38,8 +41,28 @@ public class WorkflowController {
 
     @PostMapping("/api/workflows")
     @PreAuthorize("hasRole('OPERATOR')")
-    ResponseEntity<WorkflowResponse> submitWorkflow(@Valid @RequestBody WorkflowSubmissionRequest request, Principal principal) {
+    ResponseEntity<WorkflowResponse> submitWorkflow(
+        @Valid @RequestBody WorkflowSubmissionRequest request,
+        @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+        Principal principal
+    ) {
+        String requestHash = Hashing.sha256(request.scenarioKey() + "\n" + request.requirement() + "\n" + request.repositoryReference());
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            var existing = store.findIdempotencyRecord(principal.getName(), idempotencyKey.trim());
+            if (existing.isPresent()) {
+                IdempotencyRecord record = existing.get();
+                if (!record.requestHash().equals(requestHash)) {
+                    throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency key already used with a different request.");
+                }
+                WorkflowRecord replayed = store.findWorkflow(record.workflowId())
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency record points to a missing workflow."));
+                return ResponseEntity.status(record.responseStatus()).body(WorkflowResponse.from(replayed));
+            }
+        }
         WorkflowRecord workflow = store.createWorkflow(request.scenarioKey(), request.requirement());
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            store.createIdempotencyRecord(principal.getName(), idempotencyKey.trim(), requestHash, workflow.id(), HttpStatus.CREATED.value());
+        }
         var revision = store.createRevision(workflow.id(), 1, request.requirement(), null);
         store.appendAuditEvent(
             workflow.id(),
@@ -192,9 +215,27 @@ public class WorkflowController {
         }
     }
 
-    public record TaskStatusResponse(String taskKey, String taskType, String status, int attemptCount, String dependsOn) {
+    public record TaskStatusResponse(
+        String taskKey,
+        String taskType,
+        String status,
+        int attemptCount,
+        String dependsOn,
+        String leaseOwner,
+        String leaseExpiresAt,
+        long fencingToken
+    ) {
         static TaskStatusResponse from(TaskRecord task) {
-            return new TaskStatusResponse(task.taskKey(), task.taskType(), task.status().name(), task.attemptCount(), task.dependsOnJson());
+            return new TaskStatusResponse(
+                task.taskKey(),
+                task.taskType(),
+                task.status().name(),
+                task.attemptCount(),
+                task.dependsOnJson(),
+                task.leaseOwner(),
+                task.leaseExpiresAt() == null ? null : task.leaseExpiresAt().toString(),
+                task.fencingToken()
+            );
         }
     }
 
