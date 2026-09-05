@@ -70,3 +70,36 @@ Invoke-RestMethod `
 ```
 
 Expected test result for checkpoint 3: 10 tests, 0 failures, 0 errors, 0 skipped.
+
+## Checkpoint 4
+
+Expected behavior:
+
+- Application startup remains deterministic without `OPENAI_API_KEY`.
+- `agentic.model.provider=deterministic` is the default.
+- Deterministic and OpenAI providers share `ModelRequest` and `ModelResult`.
+- Model prompts are redacted before invocation.
+- Required structured fields are enforced after provider output.
+- Model input/output character bounds are enforced.
+- OpenAI Responses API calls use `POST /v1/responses`, bearer auth, configured model, and
+  bounded HTTP timeouts.
+
+Configuration:
+
+```powershell
+$env:AGENTIC_MODEL_PROVIDER = "deterministic"
+$env:AGENTIC_MODEL_TIMEOUT = "PT20S"
+$env:AGENTIC_MODEL_MAX_INPUT_CHARS = "20000"
+$env:AGENTIC_MODEL_MAX_OUTPUT_CHARS = "20000"
+```
+
+Optional OpenAI mode:
+
+```powershell
+$env:AGENTIC_MODEL_PROVIDER = "openai"
+$env:OPENAI_API_KEY = "<api-key>"
+$env:OPENAI_BASE_URL = "https://api.openai.com"
+$env:OPENAI_MODEL = "gpt-5.6-luna"
+```
+
+Expected test result for checkpoint 4: 16 tests, 0 failures, 0 errors, 0 skipped.

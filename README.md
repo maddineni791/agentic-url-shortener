@@ -51,3 +51,23 @@ Checkpoint 3 includes local Basic authentication for platform APIs:
 | `release-approver` | `release-pass` | `RELEASE_APPROVER` |
 
 OpenAPI is available at `/v3/api-docs` and Swagger UI at `/swagger-ui.html`.
+
+## Model Providers
+
+The default model provider is deterministic and requires no API key:
+
+```powershell
+$env:AGENTIC_MODEL_PROVIDER = "deterministic"
+```
+
+Optional OpenAI Responses API mode is configured only through environment variables:
+
+```powershell
+$env:AGENTIC_MODEL_PROVIDER = "openai"
+$env:OPENAI_API_KEY = "<api-key>"
+$env:OPENAI_MODEL = "gpt-5.6-luna"
+```
+
+Both providers use the same `ModelRequest` and `ModelResult` contracts. The platform
+redacts common secret assignments before model invocation and enforces bounded input and
+output sizes.

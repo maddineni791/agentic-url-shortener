@@ -51,3 +51,23 @@ durable workflow, revision 1, and a redacted audit event.
 Local deterministic evaluation uses Basic authentication with three roles: `OPERATOR`,
 `CHANGE_APPROVER`, and `RELEASE_APPROVER`. Problem responses use RFC 9457
 `application/problem+json` structures with stable `code` and `correlationId` fields.
+
+## Checkpoint 4 Model Abstraction
+
+Agents will call models through a provider-neutral contract:
+
+- `ModelRequest` declares the SDLC capability, agent name, schema name, bounded prompt,
+  required fields, and context.
+- `ModelResult` returns provider, model, schema name, structured fields, raw bounded output,
+  character counts, latency, and optional token usage.
+- `ModelGateway` validates requests and required result fields, redacts common secret
+  assignments before invocation, and enforces configured input/output bounds.
+
+Two providers are available:
+
+- `DETERMINISTIC`, the default keyless provider, returns repeatable structured output.
+- `OPENAI`, an optional Responses API provider selected with `AGENTIC_MODEL_PROVIDER=openai`
+  and configured through `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL`.
+
+The model layer does not provide filesystem access, command execution, approval authority,
+or deployment authority. Later checkpoints will bind specialized agents to this contract.
