@@ -24,7 +24,7 @@ public class FixedMavenValidationRunner {
 
     public BuildValidationEvidence runCleanTest(Path workspace, int attemptNumber) {
         Instant start = clock.instant();
-        ProcessBuilder builder = new ProcessBuilder(".\\mvnw.cmd", "clean", "test");
+        ProcessBuilder builder = new ProcessBuilder(mavenWrapperCommand(), "clean", "test");
         builder.directory(workspace.toFile());
         stripModelCredentials(builder.environment());
         try {
@@ -49,6 +49,14 @@ public class FixedMavenValidationRunner {
             return new BuildValidationEvidence(attemptNumber, "maven-wrapper-clean-test", null, duration, true,
                 "TIMEOUT", "", "Validation interrupted.");
         }
+    }
+
+    private String mavenWrapperCommand() {
+        String osName = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        if (osName.contains("win")) {
+            return ".\\mvnw.cmd";
+        }
+        return "./mvnw";
     }
 
     private void stripModelCredentials(Map<String, String> environment) {

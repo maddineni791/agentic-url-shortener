@@ -42,9 +42,19 @@ public class UrlShortenerController {
         return ShortUrlResponse.from(service.inspect(code));
     }
 
+    @GetMapping("/api/urls/{code}/analytics")
+    RedirectAnalytics analytics(@PathVariable("code") String code) {
+        return service.analytics(code);
+    }
+
     @PatchMapping("/api/urls/{code}/deactivate")
     ShortUrlResponse deactivate(@PathVariable("code") String code) {
         return ShortUrlResponse.from(service.deactivate(code));
+    }
+
+    @PostMapping("/api/urls/cleanup")
+    CleanupResult cleanup() {
+        return service.cleanup();
     }
 
     public record CreateShortUrlRequest(

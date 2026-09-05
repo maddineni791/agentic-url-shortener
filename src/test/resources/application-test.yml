@@ -3,3 +3,8 @@ spring:
     url: jdbc:h2:mem:agentic;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH
     username: sa
     password:
+agentic:
+  url-shortener:
+    rate-limit-per-minute: 100
+    blocked-hosts:
+      - blocked.example

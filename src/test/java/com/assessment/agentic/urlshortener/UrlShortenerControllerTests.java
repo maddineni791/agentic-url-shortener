@@ -9,6 +9,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.assessment.agentic.AgenticSdlcPlatformApplication;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executors;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,6 +34,7 @@ class UrlShortenerControllerTests {
     @Test
     void createsInspectsRedirectsAndIncrementsAnalytics() throws Exception {
         String code = create("https://example.com/a?q=1");
+        assertThat(code).startsWith("us-");
 
         mockMvc.perform(get("/api/urls/" + code))
             .andExpect(status().isOk())
@@ -44,6 +49,11 @@ class UrlShortenerControllerTests {
         mockMvc.perform(get("/api/urls/" + code))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.redirectCount").value(1));
+
+        mockMvc.perform(get("/api/urls/" + code + "/analytics"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.totalRedirects").value(1))
+            .andExpect(jsonPath("$.dailyRedirects[0].redirects").value(1));
     }
 
     @Test
@@ -93,6 +103,37 @@ class UrlShortenerControllerTests {
         assertRejectedUrl("notaurl", "UNSUPPORTED_URL_SCHEME");
         assertRejectedUrl("ftp://example.com/file", "UNSUPPORTED_URL_SCHEME");
         assertRejectedUrl("https://user@example.com/secret", "URL_USERINFO_REJECTED");
+        assertRejectedUrl("https://localhost/admin", "PRIVATE_HOST_REJECTED");
+        assertRejectedUrl("https://127.0.0.1/admin", "PRIVATE_HOST_REJECTED");
+        assertRejectedUrl("https://192.168.1.20/admin", "PRIVATE_HOST_REJECTED");
+        assertRejectedUrl("https://blocked.example/page", "BLOCKED_HOST");
+    }
+
+    @Test
+    void createsUniqueRegionalCodesConcurrently() throws Exception {
+        try (var executor = Executors.newFixedThreadPool(4)) {
+            Set<String> codes = new HashSet<>(executor.invokeAll(java.util.stream.IntStream.range(0, 8)
+                    .mapToObj(index -> (Callable<String>) () -> create("https://example.com/concurrent/" + index))
+                    .toList())
+                .stream()
+                .map(future -> {
+                    try {
+                        return future.get();
+                    } catch (Exception exception) {
+                        throw new AssertionError(exception);
+                    }
+                })
+                .toList());
+            assertThat(codes).hasSize(8).allMatch(code -> code.startsWith("us-"));
+        }
+    }
+
+    @Test
+    void exposesCleanupEndpoint() throws Exception {
+        mockMvc.perform(post("/api/urls/cleanup"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.redirectEventsDeleted").isNumber())
+            .andExpect(jsonPath("$.shortUrlsDeleted").isNumber());
     }
 
     private String create(String url) throws Exception {
@@ -116,7 +157,7 @@ class UrlShortenerControllerTests {
             .getResponse()
             .getContentAsString();
         String code = response.replaceAll(".*\\\"shortCode\\\":\\\"([^\\\"]+)\\\".*", "$1");
-        assertThat(code).hasSize(8);
+        assertThat(code).hasSize(11);
         return code;
     }
 

@@ -5,6 +5,9 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.dao.DuplicateKeyException;
@@ -68,6 +71,37 @@ public class JdbcShortUrlRepository {
         }
     }
 
+    public List<RedirectAnalytics.DailyRedirectCount> dailyRedirects(UUID shortUrlId) {
+        return jdbcTemplate.query(
+            """
+            select cast(occurred_at at time zone 'UTC' as date) as redirect_day, count(*) as redirects
+            from redirect_events
+            where short_url_id = ?
+            group by cast(occurred_at at time zone 'UTC' as date)
+            order by redirect_day
+            """,
+            (rs, rowNum) -> new RedirectAnalytics.DailyRedirectCount(toLocalDate(rs.getObject("redirect_day")), rs.getLong("redirects")),
+            shortUrlId
+        );
+    }
+
+    public int deleteRedirectEventsBefore(Instant cutoff) {
+        return jdbcTemplate.update("delete from redirect_events where occurred_at < ?", Timestamp.from(cutoff));
+    }
+
+    public int deleteInactiveOrExpiredBefore(Instant updatedCutoff, Instant now) {
+        return jdbcTemplate.update(
+            """
+            delete from short_urls
+            where (active = false and updated_at < ?)
+               or (expires_at is not null and expires_at < ? and updated_at < ?)
+            """,
+            Timestamp.from(updatedCutoff),
+            Timestamp.from(now),
+            Timestamp.from(updatedCutoff)
+        );
+    }
+
     private ShortUrlRecord map(ResultSet rs, int rowNum) throws SQLException {
         Timestamp expiresAt = rs.getTimestamp("expires_at");
         return new ShortUrlRecord(
@@ -80,5 +114,18 @@ public class JdbcShortUrlRepository {
             rs.getTimestamp("updated_at").toInstant(),
             rs.getLong("redirect_count")
         );
+    }
+
+    private LocalDate toLocalDate(Object value) {
+        if (value instanceof LocalDate localDate) {
+            return localDate;
+        }
+        if (value instanceof java.sql.Date date) {
+            return date.toLocalDate();
+        }
+        if (value instanceof Timestamp timestamp) {
+            return timestamp.toInstant().atZone(ZoneOffset.UTC).toLocalDate();
+        }
+        return LocalDate.parse(value.toString());
     }
 }

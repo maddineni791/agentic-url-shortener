@@ -224,3 +224,29 @@ API exception handler.
 Commit 10 will deepen this product area with private-address blocking, configured blocked
 hosts, rate limiting with `Retry-After`, regional code prefixes, UTC daily analytics API,
 collision/concurrency tests, and retention cleanup.
+
+## Checkpoint 10 URL Shortener Production Controls
+
+The URL-shortener bounded context now includes the production controls expected by the
+assessment prototype:
+
+- request rate limiting for URL creation with HTTP 429 and `Retry-After`;
+- HTTP/HTTPS-only URL validation;
+- URL user-info rejection;
+- localhost, loopback, link-local, RFC 1918 private IPv4, and wildcard address blocking;
+- configurable blocked hosts;
+- secure random short-code generation with configurable regional prefixes;
+- collision retry during short-code allocation;
+- total redirect analytics and UTC daily analytics;
+- configurable redirect-event and inactive/expired URL retention;
+- scheduled cleanup plus an explicit cleanup API for reviewer evidence.
+
+Additional APIs:
+
+- `GET /api/urls/{code}/analytics`;
+- `POST /api/urls/cleanup`.
+
+Commit 10 keeps production controls inside deterministic Java policy and repository code,
+separate from agent reasoning. The remaining URL-shortener depth is mostly documentation
+and optional PostgreSQL container acceptance; the next checkpoints return to platform
+scenarios, governance, metrics, distributed recovery, packaging, and final acceptance.

@@ -39,7 +39,7 @@ public class UrlShortenerService {
         }
         for (int attempt = 0; attempt < MAX_COLLISION_ATTEMPTS; attempt++) {
             try {
-                return repository.create(codeGenerator.generate(properties.getCodeLength()), uri.toString(), effectiveExpiry);
+                return repository.create(codeGenerator.generate(properties.getRegionPrefix(), properties.getCodeLength()), uri.toString(), effectiveExpiry);
             } catch (DuplicateKeyException ignored) {
                 // Retry with a new secure random code.
             }
@@ -67,5 +67,17 @@ public class UrlShortenerService {
     public ShortUrlRecord deactivate(String code) {
         repository.deactivate(code);
         return inspect(code);
+    }
+
+    public RedirectAnalytics analytics(String code) {
+        ShortUrlRecord record = inspect(code);
+        return new RedirectAnalytics(record.shortCode(), record.redirectCount(), repository.dailyRedirects(record.id()));
+    }
+
+    public CleanupResult cleanup() {
+        Instant now = clock.instant();
+        int redirectEvents = repository.deleteRedirectEventsBefore(now.minus(properties.getRedirectEventRetention()));
+        int inactiveUrls = repository.deleteInactiveOrExpiredBefore(now.minus(properties.getInactiveUrlRetention()), now);
+        return new CleanupResult(redirectEvents, inactiveUrls);
     }
 }

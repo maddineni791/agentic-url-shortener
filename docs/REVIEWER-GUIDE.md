@@ -208,3 +208,23 @@ Validation command:
 ```
 
 Expected test result for checkpoint 9: 32 tests, 0 failures, 0 errors, 0 skipped.
+
+## Checkpoint 10
+
+Expected behavior:
+
+- URL creation is rate-limited and returns HTTP 429 with `Retry-After`.
+- Short codes include the configured regional prefix.
+- Redirect analytics include total redirects and UTC daily counts.
+- Localhost, private IPs, configured blocked hosts, unsupported schemes, and user-info are
+  rejected.
+- Concurrent URL creation produces unique codes.
+- Cleanup can remove retained redirect events and inactive/expired URLs.
+
+Validation command:
+
+```powershell
+.\mvnw.cmd clean verify
+```
+
+Expected test result for checkpoint 10: 35 tests, 0 failures, 0 errors, 0 skipped.

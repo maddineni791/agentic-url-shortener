@@ -9,6 +9,14 @@ spring:
     enabled: true
 
 agentic:
+  url-shortener:
+    region-prefix: ${AGENTIC_URL_REGION_PREFIX:us}
+    default-ttl: ${AGENTIC_URL_DEFAULT_TTL:30d}
+    code-length: ${AGENTIC_URL_CODE_LENGTH:8}
+    rate-limit-per-minute: ${AGENTIC_URL_RATE_LIMIT_PER_MINUTE:60}
+    redirect-event-retention: ${AGENTIC_REDIRECT_EVENT_RETENTION:90d}
+    inactive-url-retention: ${AGENTIC_INACTIVE_URL_RETENTION:30d}
+    blocked-hosts: ${AGENTIC_BLOCKED_HOSTS:}
   model:
     provider: ${AGENTIC_MODEL_PROVIDER:deterministic}
     timeout: ${AGENTIC_MODEL_TIMEOUT:PT20S}
