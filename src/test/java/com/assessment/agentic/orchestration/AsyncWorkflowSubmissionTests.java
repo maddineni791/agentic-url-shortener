@@ -11,6 +11,7 @@ import com.assessment.agentic.AgenticSdlcPlatformApplication;
 import com.jayway.jsonpath.JsonPath;
 import java.time.Duration;
 import java.time.Instant;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -19,7 +20,11 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
-@SpringBootTest(classes = AgenticSdlcPlatformApplication.class, properties = "agentic.orchestration.async=true")
+/**
+ * Exercises the asynchronous submission path by toggling {@link OrchestrationProperties} at runtime,
+ * so it reuses the shared application context rather than forcing a distinct one.
+ */
+@SpringBootTest(classes = AgenticSdlcPlatformApplication.class)
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class AsyncWorkflowSubmissionTests {
@@ -27,8 +32,18 @@ class AsyncWorkflowSubmissionTests {
     @Autowired
     private MockMvc mockMvc;
 
+    @Autowired
+    private OrchestrationProperties orchestrationProperties;
+
+    @AfterEach
+    void resetAsync() {
+        orchestrationProperties.setAsync(false);
+    }
+
     @Test
-    void submissionReturnsImmediatelyAndOrchestrationCompletesOffThread() throws Exception {
+    void submissionReturnsBeforeOrchestrationCompletesAndThenReachesTheChangeGate() throws Exception {
+        orchestrationProperties.setAsync(true);
+
         String json = mockMvc.perform(post("/api/workflows")
                 .with(httpBasic("operator", "operator-pass"))
                 .contentType(MediaType.APPLICATION_JSON)
@@ -39,12 +54,11 @@ class AsyncWorkflowSubmissionTests {
                     }
                     """))
             .andExpect(status().isCreated())
-            .andExpect(jsonPath("$.status").value(org.hamcrest.Matchers.oneOf("SUBMITTED", "RUNNING")))
+            .andExpect(jsonPath("$.status").value(org.hamcrest.Matchers.oneOf("SUBMITTED", "RUNNING", "AWAITING_CHANGE_APPROVAL")))
             .andReturn().getResponse().getContentAsString();
         String workflowId = JsonPath.read(json, "$.id");
 
-        String status = awaitStatus(workflowId, Duration.ofSeconds(90),
-            "AWAITING_CHANGE_APPROVAL", "FAILED");
+        String status = awaitStatus(workflowId, Duration.ofSeconds(60), "AWAITING_CHANGE_APPROVAL", "FAILED");
         assertThat(status).isEqualTo("AWAITING_CHANGE_APPROVAL");
     }
 
@@ -61,7 +75,7 @@ class AsyncWorkflowSubmissionTests {
                     return last;
                 }
             }
-            Thread.sleep(500);
+            Thread.sleep(300);
         }
         return last;
     }

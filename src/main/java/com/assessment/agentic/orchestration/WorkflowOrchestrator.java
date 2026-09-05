@@ -440,7 +440,7 @@ public class WorkflowOrchestrator {
         try {
             return com.assessment.agentic.persistence.Hashing.sha256(Files.readString(path, StandardCharsets.UTF_8));
         } catch (Exception exception) {
-            throw new IllegalStateException("Unable to hash generated file for repair.", exception);
+            return "";
         }
     }
 

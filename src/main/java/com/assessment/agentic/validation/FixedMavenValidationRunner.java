@@ -24,9 +24,11 @@ public class FixedMavenValidationRunner {
 
     public BuildValidationEvidence runCleanTest(Path workspace, int attemptNumber) {
         Instant start = clock.instant();
-        ProcessBuilder builder = new ProcessBuilder(mavenWrapperCommand(), "clean", "test");
+        // Offline + batch: the shared local repository is already populated by the parent build, so the
+        // sandboxed build must not reach the network (enforcer metadata lookups otherwise stall under CI).
+        ProcessBuilder builder = new ProcessBuilder(mavenWrapperCommand(), "-o", "-B", "-ntp", "clean", "test");
         builder.directory(workspace.toFile());
-        stripModelCredentials(builder.environment());
+        sanitizeChildEnvironment(builder.environment());
         try {
             Process process = builder.start();
             boolean finished = process.waitFor(properties.getTimeout().toMillis(), TimeUnit.MILLISECONDS);
@@ -59,11 +61,16 @@ public class FixedMavenValidationRunner {
         return "./mvnw";
     }
 
-    private void stripModelCredentials(Map<String, String> environment) {
+    private void sanitizeChildEnvironment(Map<String, String> environment) {
         environment.remove("OPENAI_API_KEY");
         environment.remove("AZURE_OPENAI_API_KEY");
         environment.remove("ANTHROPIC_API_KEY");
         environment.remove("AGENTIC_MODEL_PROVIDER");
+        // Do not let the parent build's JVM/JaCoCo agent options leak into the sandboxed build.
+        environment.remove("MAVEN_OPTS");
+        environment.remove("JAVA_TOOL_OPTIONS");
+        environment.remove("_JAVA_OPTIONS");
+        environment.remove("JDK_JAVA_OPTIONS");
     }
 
     private String classify(boolean timedOut, Integer exitCode, String stdout, String stderr) {
