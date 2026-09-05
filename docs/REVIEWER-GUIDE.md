@@ -103,3 +103,28 @@ $env:OPENAI_MODEL = "gpt-5.6-luna"
 ```
 
 Expected test result for checkpoint 4: 16 tests, 0 failures, 0 errors, 0 skipped.
+
+## Checkpoint 5
+
+Expected behavior:
+
+- Specialized agents produce typed outputs through the shared model abstraction.
+- The ambiguity agent blocks materially underspecified requirements without relying on a
+  scenario enum.
+- The planner emits executor tasks with dependencies, gates, retry policy, and parallel
+  work groups.
+- Implementation, testing, and repair agents emit structured file-operation proposals.
+- Security/risk and release-readiness agents emit hash-linked governance artifacts.
+
+Validation command:
+
+```powershell
+.\mvnw.cmd clean verify
+```
+
+Representative tests:
+
+- `SpecializedAgentTests.requirementAgentProducesValidatedRequirementArtifact`
+- `SpecializedAgentTests.ambiguityAgentBlocksMateriallyUnderspecifiedRequirement`
+- `SpecializedAgentTests.plannerProducesDynamicExecutionPlaneTasksWithDependenciesAndParallelBranches`
+- `SpecializedAgentTests.implementationAndTestAgentsProduceStructuredFileOperationProposals`

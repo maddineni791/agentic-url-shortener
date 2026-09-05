@@ -71,3 +71,46 @@ Two providers are available:
 
 The model layer does not provide filesystem access, command execution, approval authority,
 or deployment authority. Later checkpoints will bind specialized agents to this contract.
+
+## Checkpoint 5 Agent Execution Plane
+
+The platform now has the executor-facing agent layer that was missing in the rejected
+control-plane interpretation. Concrete agent classes implement the verbs the orchestrator
+will invoke:
+
+- requirement interpretation;
+- ambiguity and clarification analysis;
+- repository analysis;
+- dependency-aware task decomposition;
+- architecture;
+- implementation proposal generation;
+- test proposal generation;
+- validation diagnosis;
+- repair proposal generation;
+- documentation planning;
+- security and risk review;
+- release readiness review.
+
+Every specialized agent calls `ModelGateway` with a named schema and required fields, maps
+the provider-neutral result into a typed Java record, validates that record, and emits a
+hash-linked `AgentArtifact`. The deterministic provider remains keyless, but it uses the
+same contracts as the OpenAI provider.
+
+`TaskDecompositionAgent` produces executor tasks such as `analyze-repository`,
+`design-change`, `implement-change`, `generate-tests`, `synchronize-patch`,
+`security-risk-review`, and `release-readiness`, including dependencies and parallel work
+groups. `ImplementationAgent`, `TestGenerationAgent`, and `RepairAgent` produce structured
+`FileOperationProposal` objects with operation type, normalized relative path, complete
+content, optimistic-lock hash where needed, reason, requirement identifier, task
+identifier, and lineage. Later checkpoints will persist those artifacts, run policy
+checks, apply them inside isolated repository copies, and validate them with fixed Maven
+commands.
+
+Ambiguity detection is deliberately tied to requirement dimensions rather than a scenario
+enum. The ambiguity agent checks missing or conflicting API behavior, persistence,
+security, and time-boundary dimensions and returns concrete clarification questions before
+source mutation is allowed.
+
+The `EngineeringTool` and `ArtifactValidator` interfaces are controlled extension points
+for bounded repository reads, patch application, validation, evidence checks, retry,
+fallback, and rollback.
