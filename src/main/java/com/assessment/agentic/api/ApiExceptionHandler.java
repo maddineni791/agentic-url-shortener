@@ -1,5 +1,6 @@
 package com.assessment.agentic.api;
 
+import com.assessment.agentic.urlshortener.UrlShortenerException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.net.URI;
 import java.util.List;
@@ -35,6 +36,21 @@ public class ApiExceptionHandler {
         problem.setType(URI.create("https://agentic-url-shortener.local/problems/request-rejected"));
         problem.setTitle("Request rejected");
         problem.setProperty("code", "REQUEST_REJECTED");
+        problem.setProperty("correlationId", correlationId(request));
+        return problem;
+    }
+
+    @ExceptionHandler(UrlShortenerException.class)
+    ProblemDetail urlShortenerProblem(UrlShortenerException ex, HttpServletRequest request) {
+        HttpStatus status = switch (ex.code()) {
+            case "SHORT_CODE_NOT_FOUND" -> HttpStatus.NOT_FOUND;
+            case "SHORT_URL_EXPIRED", "SHORT_URL_DEACTIVATED" -> HttpStatus.GONE;
+            default -> HttpStatus.BAD_REQUEST;
+        };
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, ex.getMessage());
+        problem.setType(URI.create("https://agentic-url-shortener.local/problems/url-shortener"));
+        problem.setTitle("URL shortener request rejected");
+        problem.setProperty("code", ex.code());
         problem.setProperty("correlationId", correlationId(request));
         return problem;
     }

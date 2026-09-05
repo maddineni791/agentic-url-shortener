@@ -11,10 +11,9 @@ references and are not copied.
 
 ## Current Checkpoint
 
-Checkpoint 1 establishes the runnable Java 21/Spring Boot foundation and the initial
-traceability matrix. Later checkpoints add persistence, orchestration, agents, governed
-patch application, validation, repair, distributed execution, URL-shortener behavior, and
-reviewer evidence.
+Checkpoint 9 includes the runnable agentic workflow path plus the functional
+URL-shortener core: URL creation, redirect, inspection, deactivation, expiry, PostgreSQL
+persistence, Flyway migrations, validation, and RFC 9457 Problem Details.
 
 ## Local Development
 
@@ -51,6 +50,42 @@ Checkpoint 3 includes local Basic authentication for platform APIs:
 | `release-approver` | `release-pass` | `RELEASE_APPROVER` |
 
 OpenAPI is available at `/v3/api-docs` and Swagger UI at `/swagger-ui.html`.
+
+## URL Shortener Quick Check
+
+Start PostgreSQL with Docker Desktop:
+
+```powershell
+docker run --name agentic-postgres `
+  -e POSTGRES_DB=agentic `
+  -e POSTGRES_USER=agentic `
+  -e POSTGRES_PASSWORD=agentic `
+  -p 5432:5432 `
+  -d postgres:16-alpine
+```
+
+Run the app:
+
+```powershell
+$env:AGENTIC_DB_URL = "jdbc:postgresql://localhost:5432/agentic"
+$env:AGENTIC_DB_USERNAME = "agentic"
+$env:AGENTIC_DB_PASSWORD = "agentic"
+$env:AGENTIC_MODEL_PROVIDER = "deterministic"
+.\mvnw.cmd spring-boot:run
+```
+
+Create and inspect a short URL:
+
+```powershell
+$created = Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/urls `
+  -ContentType "application/json" `
+  -Body (@{ url = "https://example.com/docs"; expiresAt = $null } | ConvertTo-Json)
+
+$created
+Invoke-WebRequest -MaximumRedirection 0 -Uri "http://localhost:8080/r/$($created.shortCode)"
+Invoke-RestMethod -Uri "http://localhost:8080/api/urls/$($created.shortCode)"
+Invoke-RestMethod -Method Patch -Uri "http://localhost:8080/api/urls/$($created.shortCode)/deactivate"
+```
 
 ## Model Providers
 

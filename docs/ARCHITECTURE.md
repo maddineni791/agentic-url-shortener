@@ -202,3 +202,25 @@ repair budget is currently bounded to one repair attempt.
 
 Rollback is identified when repair budget is exhausted, but verified rollback execution is
 still scheduled for the next repository-safety checkpoint.
+
+## Checkpoint 9 URL Shortener Core
+
+The platform now includes the concrete URL-shortener product slice used by the assessment
+scenarios. The bounded context owns its controller, service, repository, safety validator,
+short-code generator, configuration properties, and Flyway schema.
+
+Core APIs:
+
+- `POST /api/urls` creates a short URL;
+- `GET /r/{code}` redirects with `302 Found` and `Location`;
+- `GET /api/urls/{code}` inspects active state, expiry, target URL, and redirect count;
+- `PATCH /api/urls/{code}/deactivate` deactivates a short URL.
+
+Persistence is backed by `short_urls` and `redirect_events`. Redirects update
+`redirect_count` and persist an event. URL validation currently allows only HTTP/HTTPS,
+requires a host, rejects user-info, and returns RFC 9457 Problem Details through the shared
+API exception handler.
+
+Commit 10 will deepen this product area with private-address blocking, configured blocked
+hosts, rate limiting with `Retry-After`, regional code prefixes, UTC daily analytics API,
+collision/concurrency tests, and retention cleanup.

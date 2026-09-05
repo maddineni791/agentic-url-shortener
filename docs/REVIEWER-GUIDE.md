@@ -187,3 +187,24 @@ Validation command:
 ```
 
 Expected test result for checkpoint 8: 27 tests, 0 failures, 0 errors, 0 skipped.
+
+## Checkpoint 9
+
+Expected behavior:
+
+- `POST /api/urls` creates a persisted short URL.
+- `GET /r/{code}` returns `302 Found` with `Location` and records redirect analytics.
+- `GET /api/urls/{code}` returns inspection data including active state, expiry, and
+  redirect count.
+- `PATCH /api/urls/{code}/deactivate` disables future redirects.
+- Expired, unknown, malformed, unsupported-scheme, and user-info URLs return RFC 9457
+  Problem Details with stable error codes.
+- Flyway applies `V2__url_shortener_core.sql`.
+
+Validation command:
+
+```powershell
+.\mvnw.cmd clean verify
+```
+
+Expected test result for checkpoint 9: 32 tests, 0 failures, 0 errors, 0 skipped.
