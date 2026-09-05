@@ -3,6 +3,7 @@ package com.assessment.agentic.agents;
 import com.assessment.agentic.model.ModelCapability;
 import com.assessment.agentic.model.ModelGateway;
 import jakarta.validation.Validator;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.springframework.stereotype.Component;
@@ -21,13 +22,15 @@ public class RepairAgent extends BaseModelAgent<FileOperationProposalSet> {
         FileOperationProposal operation = new FileOperationProposal(
             "UPDATE",
             path,
-            task.inputs().getOrDefault("correctedContent", "// corrected content supplied by repair agent\n"),
+            task.inputs().getOrDefault("correctedContent", ImplementationAgent.workingContent()),
             task.inputs().get("expectedCurrentSha256"),
             "Repair the failed generated artifact using validation evidence.",
             "REQ-006",
             task.id(),
             context.workflowId() + "/revision-" + context.revision() + "/" + task.id()
         );
-        return new FileOperationProposalSet(List.of(operation), List.of(path), List.of(fields.get("lineage")));
+        List<String> lineage = new ArrayList<>(splitList(fields.get("lineage")));
+        lineage.add(task.inputs().getOrDefault("failureClass", "UNKNOWN"));
+        return new FileOperationProposalSet(List.of(operation), List.of(path), lineage);
     }
 }

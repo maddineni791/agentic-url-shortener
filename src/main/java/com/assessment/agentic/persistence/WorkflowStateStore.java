@@ -32,6 +32,20 @@ public interface WorkflowStateStore {
         String payload
     );
 
+    ValidationAttemptRecord createValidationAttempt(
+        UUID workflowId,
+        UUID revisionId,
+        UUID taskId,
+        int attemptNumber,
+        String commandName,
+        Integer exitCode,
+        long durationMillis,
+        boolean timedOut,
+        String failureClassification,
+        String stdoutExcerpt,
+        String stderrExcerpt
+    );
+
     Optional<WorkflowRecord> findWorkflow(UUID workflowId);
 
     Optional<RevisionRecord> findRevision(UUID revisionId);
@@ -49,6 +63,8 @@ public interface WorkflowStateStore {
     List<ArtifactRecord> listArtifacts(UUID workflowId, UUID revisionId);
 
     List<AuditEventRecord> listAuditEvents(UUID workflowId);
+
+    List<ValidationAttemptRecord> listValidationAttempts(UUID workflowId);
 
     void updateWorkflowStatus(UUID workflowId, WorkflowStatus status);
 

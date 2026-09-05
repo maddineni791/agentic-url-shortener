@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -56,6 +57,30 @@ public class IsolatedRepositoryService {
         }
     }
 
+    public PatchApplicationResult applyToExisting(String workspacePath, List<FileOperationProposalSet> proposalSets) {
+        List<FileOperationProposal> operations = proposalSets.stream()
+            .flatMap(set -> set.fileOperations().stream())
+            .toList();
+        PatchPolicyDecision decision = policyEngine.evaluate(operations);
+        if (!decision.allowed()) {
+            return new PatchApplicationResult(workspacePath, "", "", List.of(), "", decision);
+        }
+        try {
+            Path workspace = Path.of(workspacePath).toAbsolutePath().normalize();
+            String baselineManifest = manifestJson(workspace);
+            List<String> changedFiles = new ArrayList<>();
+            StringBuilder diff = new StringBuilder();
+            for (FileOperationProposal operation : operations) {
+                applyOperation(workspace, operation, diff);
+                changedFiles.add(operation.normalizedRelativePath());
+            }
+            String appliedManifest = manifestJson(workspace);
+            return new PatchApplicationResult(workspace.toString(), Hashing.sha256(baselineManifest), Hashing.sha256(appliedManifest), changedFiles, diff.toString(), decision);
+        } catch (IOException exception) {
+            throw new RepositoryMutationException("Unable to apply repair patch in isolated workspace.", exception);
+        }
+    }
+
     public String manifestJson(String workspacePath) {
         try {
             return manifestJson(Path.of(workspacePath));
@@ -74,8 +99,38 @@ public class IsolatedRepositoryService {
             deleteTree(workspace);
         }
         Files.createDirectories(workspace);
-        Files.writeString(workspace.resolve("README.md"), "# Isolated generated workspace\n", StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);
+        seedBuildFiles(workspace);
         return workspace;
+    }
+
+    private void seedBuildFiles(Path workspace) throws IOException {
+        Path sourceRoot = Path.of("").toAbsolutePath().normalize();
+        copyIfExists(sourceRoot.resolve("pom.xml"), workspace.resolve("pom.xml"));
+        copyIfExists(sourceRoot.resolve("mvnw.cmd"), workspace.resolve("mvnw.cmd"));
+        copyIfExists(sourceRoot.resolve("mvnw"), workspace.resolve("mvnw"));
+        Path sourceWrapper = sourceRoot.resolve(".mvn").resolve("wrapper");
+        if (Files.exists(sourceWrapper)) {
+            try (var stream = Files.walk(sourceWrapper)) {
+                for (Path source : stream.filter(Files::isRegularFile).toList()) {
+                    Path target = workspace.resolve(".mvn").resolve("wrapper").resolve(sourceWrapper.relativize(source).toString()).normalize();
+                    Files.createDirectories(target.getParent());
+                    Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        }
+        Files.createDirectories(workspace.resolve(".mvn"));
+        Files.writeString(workspace.resolve(".mvn").resolve("maven.config"), "-Dmaven.repo.local=" + sourceRoot.resolve(".mvn").resolve("repository").toString().replace('\\', '/') + "\n",
+            StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+        if (!Files.exists(workspace.resolve("README.md"))) {
+            Files.writeString(workspace.resolve("README.md"), "# Isolated generated workspace\n", StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);
+        }
+    }
+
+    private void copyIfExists(Path source, Path target) throws IOException {
+        if (Files.exists(source)) {
+            Files.createDirectories(target.getParent());
+            Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     private void applyOperation(Path workspace, FileOperationProposal operation, StringBuilder diff) throws IOException {

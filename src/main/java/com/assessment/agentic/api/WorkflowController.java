@@ -5,6 +5,7 @@ import com.assessment.agentic.persistence.ArtifactRecord;
 import com.assessment.agentic.persistence.AuditEventRecord;
 import com.assessment.agentic.persistence.RevisionRecord;
 import com.assessment.agentic.persistence.TaskRecord;
+import com.assessment.agentic.persistence.ValidationAttemptRecord;
 import com.assessment.agentic.persistence.WorkflowRecord;
 import com.assessment.agentic.persistence.WorkflowStateStore;
 import jakarta.validation.Valid;
@@ -157,6 +158,16 @@ public class WorkflowController {
         return new PageResponse<>(items, 0, 50, items.size());
     }
 
+    @GetMapping("/api/workflows/{workflowId}/validation-attempts")
+    @PreAuthorize("hasRole('OPERATOR') or hasRole('CHANGE_APPROVER') or hasRole('RELEASE_APPROVER')")
+    PageResponse<ValidationAttemptResponse> validationAttempts(@PathVariable("workflowId") UUID workflowId) {
+        requireWorkflow(workflowId);
+        List<ValidationAttemptResponse> items = store.listValidationAttempts(workflowId).stream()
+            .map(ValidationAttemptResponse::from)
+            .toList();
+        return new PageResponse<>(items, 0, 50, items.size());
+    }
+
     private WorkflowRecord requireWorkflow(UUID workflowId) {
         return store.findWorkflow(workflowId)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow not found."));
@@ -224,6 +235,22 @@ public class WorkflowController {
     public record AuditEventResponse(String eventType, String correlationId, String actor, String payloadHash) {
         static AuditEventResponse from(AuditEventRecord event) {
             return new AuditEventResponse(event.eventType(), event.correlationId(), event.actor(), event.originalPayloadSha256());
+        }
+    }
+
+    public record ValidationAttemptResponse(
+        int attemptNumber,
+        String commandName,
+        Integer exitCode,
+        long durationMillis,
+        boolean timedOut,
+        String failureClassification,
+        String stdoutExcerpt,
+        String stderrExcerpt
+    ) {
+        static ValidationAttemptResponse from(ValidationAttemptRecord attempt) {
+            return new ValidationAttemptResponse(attempt.attemptNumber(), attempt.commandName(), attempt.exitCode(), attempt.durationMillis(),
+                attempt.timedOut(), attempt.failureClassification(), attempt.stdoutExcerpt(), attempt.stderrExcerpt());
         }
     }
 }

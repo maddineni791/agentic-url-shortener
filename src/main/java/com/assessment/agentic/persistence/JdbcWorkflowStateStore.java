@@ -164,6 +164,45 @@ public class JdbcWorkflowStateStore implements WorkflowStateStore {
     }
 
     @Override
+    public ValidationAttemptRecord createValidationAttempt(
+        UUID workflowId,
+        UUID revisionId,
+        UUID taskId,
+        int attemptNumber,
+        String commandName,
+        Integer exitCode,
+        long durationMillis,
+        boolean timedOut,
+        String failureClassification,
+        String stdoutExcerpt,
+        String stderrExcerpt
+    ) {
+        UUID id = UUID.randomUUID();
+        jdbcTemplate.update(
+            """
+            insert into validation_attempts
+            (id, workflow_id, revision_id, task_id, attempt_number, command_name, exit_code, duration_millis, timed_out,
+             failure_classification, stdout_excerpt, stderr_excerpt, created_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            id,
+            workflowId,
+            revisionId,
+            taskId,
+            attemptNumber,
+            commandName,
+            exitCode,
+            durationMillis,
+            timedOut,
+            failureClassification,
+            stdoutExcerpt,
+            stderrExcerpt,
+            Timestamp.from(clock.instant())
+        );
+        return jdbcTemplate.queryForObject("select * from validation_attempts where id = ?", this::mapValidationAttempt, id);
+    }
+
+    @Override
     public Optional<WorkflowRecord> findWorkflow(UUID workflowId) {
         return jdbcTemplate.query("select * from workflows where id = ?", this::mapWorkflow, workflowId).stream().findFirst();
     }
@@ -238,6 +277,15 @@ public class JdbcWorkflowStateStore implements WorkflowStateStore {
         return jdbcTemplate.query(
             "select * from audit_events where workflow_id = ? order by created_at",
             this::mapAuditEvent,
+            workflowId
+        );
+    }
+
+    @Override
+    public List<ValidationAttemptRecord> listValidationAttempts(UUID workflowId) {
+        return jdbcTemplate.query(
+            "select * from validation_attempts where workflow_id = ? order by created_at, attempt_number",
+            this::mapValidationAttempt,
             workflowId
         );
     }
@@ -347,6 +395,24 @@ public class JdbcWorkflowStateStore implements WorkflowStateStore {
             rs.getString("correlation_id"),
             rs.getString("redacted_payload"),
             rs.getString("original_payload_sha256"),
+            rs.getTimestamp("created_at").toInstant()
+        );
+    }
+
+    private ValidationAttemptRecord mapValidationAttempt(ResultSet rs, int rowNum) throws SQLException {
+        return new ValidationAttemptRecord(
+            rs.getObject("id", UUID.class),
+            rs.getObject("workflow_id", UUID.class),
+            rs.getObject("revision_id", UUID.class),
+            rs.getObject("task_id", UUID.class),
+            rs.getInt("attempt_number"),
+            rs.getString("command_name"),
+            (Integer) rs.getObject("exit_code"),
+            rs.getLong("duration_millis"),
+            rs.getBoolean("timed_out"),
+            rs.getString("failure_classification"),
+            rs.getString("stdout_excerpt"),
+            rs.getString("stderr_excerpt"),
             rs.getTimestamp("created_at").toInstant()
         );
     }

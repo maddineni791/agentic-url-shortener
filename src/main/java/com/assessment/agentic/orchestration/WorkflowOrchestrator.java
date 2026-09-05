@@ -11,6 +11,7 @@ import com.assessment.agentic.agents.DocumentationAgent;
 import com.assessment.agentic.agents.ExecutionContext;
 import com.assessment.agentic.agents.FileOperationProposalSet;
 import com.assessment.agentic.agents.ImplementationAgent;
+import com.assessment.agentic.agents.RepairAgent;
 import com.assessment.agentic.agents.ReleaseReadinessAgent;
 import com.assessment.agentic.agents.RepositoryAnalysisAgent;
 import com.assessment.agentic.agents.RequirementUnderstandingAgent;
@@ -27,11 +28,16 @@ import com.assessment.agentic.persistence.WorkflowStateStore;
 import com.assessment.agentic.persistence.WorkflowStatus;
 import com.assessment.agentic.repository.IsolatedRepositoryService;
 import com.assessment.agentic.repository.PatchApplicationResult;
+import com.assessment.agentic.validation.BuildValidationEvidence;
+import com.assessment.agentic.validation.FixedMavenValidationRunner;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -46,10 +52,12 @@ public class WorkflowOrchestrator {
     private final ArchitectureAgent architectureAgent;
     private final ImplementationAgent implementationAgent;
     private final TestGenerationAgent testGenerationAgent;
+    private final RepairAgent repairAgent;
     private final DocumentationAgent documentationAgent;
     private final SecurityRiskReviewAgent securityRiskReviewAgent;
     private final ReleaseReadinessAgent releaseReadinessAgent;
     private final IsolatedRepositoryService isolatedRepositoryService;
+    private final FixedMavenValidationRunner validationRunner;
     private final ObjectMapper objectMapper;
 
     public WorkflowOrchestrator(
@@ -61,10 +69,12 @@ public class WorkflowOrchestrator {
         ArchitectureAgent architectureAgent,
         ImplementationAgent implementationAgent,
         TestGenerationAgent testGenerationAgent,
+        RepairAgent repairAgent,
         DocumentationAgent documentationAgent,
         SecurityRiskReviewAgent securityRiskReviewAgent,
         ReleaseReadinessAgent releaseReadinessAgent,
         IsolatedRepositoryService isolatedRepositoryService,
+        FixedMavenValidationRunner validationRunner,
         ObjectMapper objectMapper
     ) {
         this.store = store;
@@ -75,10 +85,12 @@ public class WorkflowOrchestrator {
         this.architectureAgent = architectureAgent;
         this.implementationAgent = implementationAgent;
         this.testGenerationAgent = testGenerationAgent;
+        this.repairAgent = repairAgent;
         this.documentationAgent = documentationAgent;
         this.securityRiskReviewAgent = securityRiskReviewAgent;
         this.releaseReadinessAgent = releaseReadinessAgent;
         this.isolatedRepositoryService = isolatedRepositoryService;
+        this.validationRunner = validationRunner;
         this.objectMapper = objectMapper;
     }
 
@@ -146,6 +158,7 @@ public class WorkflowOrchestrator {
             store.updateTaskStatus(task.id(), TaskStatus.SUCCEEDED);
             store.appendAuditEvent(workflow.id(), revision.id(), task.id(), "patch.applied", "PATCH_APPLIER", correlationId,
                 write(Map.of("changedFiles", result.changedFiles(), "workspace", result.workspacePath())));
+            validateWithBoundedRepair(workflow, revision, task, result, actor, correlationId);
         } else {
             store.updateTaskStatus(task.id(), TaskStatus.FAILED);
             store.updateWorkflowStatus(workflow.id(), WorkflowStatus.FAILED);
@@ -153,6 +166,93 @@ public class WorkflowOrchestrator {
                 write(result.policyDecision()));
         }
         return store.findTask(task.id()).orElseThrow();
+    }
+
+    private void validateWithBoundedRepair(
+        WorkflowRecord workflow,
+        RevisionRecord revision,
+        TaskRecord patchTask,
+        PatchApplicationResult patchResult,
+        String actor,
+        String correlationId
+    ) {
+        TaskRecord validationTask = store.createTask(workflow.id(), revision.id(), "validate-generated-workspace", "VALIDATOR",
+            write(List.of("apply-generated-patch")));
+        store.updateTaskStatus(validationTask.id(), TaskStatus.RUNNING);
+        store.incrementTaskAttempt(validationTask.id());
+        BuildValidationEvidence firstAttempt = validationRunner.runCleanTest(Path.of(patchResult.workspacePath()), 1);
+        persistValidationEvidence(workflow, revision, validationTask, firstAttempt);
+        if (firstAttempt.successful()) {
+            store.updateTaskStatus(validationTask.id(), TaskStatus.SUCCEEDED);
+            store.appendAuditEvent(workflow.id(), revision.id(), validationTask.id(), "validation.passed", "VALIDATOR", correlationId, write(firstAttempt));
+            return;
+        }
+
+        store.appendAuditEvent(workflow.id(), revision.id(), validationTask.id(), "validation.failed", "VALIDATOR", correlationId, write(firstAttempt));
+        TaskRecord repairTask = runRepair(workflow, revision, patchResult, firstAttempt, actor, correlationId);
+        BuildValidationEvidence secondAttempt = validationRunner.runCleanTest(Path.of(patchResult.workspacePath()), 2);
+        persistValidationEvidence(workflow, revision, validationTask, secondAttempt);
+        if (secondAttempt.successful()) {
+            store.updateTaskStatus(validationTask.id(), TaskStatus.SUCCEEDED);
+            store.appendAuditEvent(workflow.id(), revision.id(), validationTask.id(), "validation.revalidated", "VALIDATOR", correlationId, write(secondAttempt));
+        } else {
+            store.updateTaskStatus(validationTask.id(), TaskStatus.FAILED);
+            store.updateWorkflowStatus(workflow.id(), WorkflowStatus.FAILED);
+            store.appendAuditEvent(workflow.id(), revision.id(), repairTask.id(), "rollback.required", "VALIDATOR", correlationId,
+                "Repair budget exhausted; rollback will be implemented in the rollback checkpoint.");
+        }
+    }
+
+    private TaskRecord runRepair(
+        WorkflowRecord workflow,
+        RevisionRecord revision,
+        PatchApplicationResult patchResult,
+        BuildValidationEvidence failedAttempt,
+        String actor,
+        String correlationId
+    ) {
+        String failedPath = "src/main/java/com/assessment/generated/urlshortener/GeneratedUrlShortenerSlice.java";
+        TaskRecord task = store.createTask(workflow.id(), revision.id(), "repair-validation-failure", AgentRole.REPAIR_ENGINEER.name(),
+            write(List.of("validate-generated-workspace")));
+        store.updateTaskStatus(task.id(), TaskStatus.RUNNING);
+        store.incrementTaskAttempt(task.id());
+        String currentHash = fileHash(Path.of(patchResult.workspacePath()).resolve(failedPath));
+        AgentTask agentTask = new AgentTask(task.taskKey(), AgentRole.REPAIR_ENGINEER, "Repair failed generated code", List.of("validate-generated-workspace"),
+            Map.of(
+                "failedPath", failedPath,
+                "expectedCurrentSha256", currentHash,
+                "failureClass", failedAttempt.failureClassification(),
+                "stdout", failedAttempt.stdoutExcerpt(),
+                "stderr", failedAttempt.stderrExcerpt()
+            ));
+        AgentExecutionResult<FileOperationProposalSet> repair = repairAgent.execute(agentTask,
+            new ExecutionContext(workflow.id().toString(), revision.revisionNumber(), workflow.originalRequirement(), Map.of()));
+        persistArtifacts(workflow, revision, task, repair);
+        PatchApplicationResult repairResult = isolatedRepositoryService.applyToExisting(patchResult.workspacePath(), List.of(repair.output()));
+        store.createArtifact(workflow.id(), revision.id(), task.id(), "repair-applied-file-operations.json", "application/json",
+            write(Map.of("changedFiles", repairResult.changedFiles(), "workspacePath", repairResult.workspacePath())),
+            write(Map.of("producingTask", task.taskKey(), "failedValidationAttempt", failedAttempt.attemptNumber())));
+        store.createArtifact(workflow.id(), revision.id(), task.id(), "repair-diff.patch", "text/x-diff",
+            repairResult.unifiedDiff(), write(Map.of("producingTask", task.taskKey())));
+        store.updateTaskStatus(task.id(), repairResult.policyDecision().allowed() ? TaskStatus.SUCCEEDED : TaskStatus.FAILED);
+        store.appendAuditEvent(workflow.id(), revision.id(), task.id(), "repair.applied", actor, correlationId,
+            write(Map.of("allowed", repairResult.policyDecision().allowed(), "failureClass", failedAttempt.failureClassification())));
+        return store.findTask(task.id()).orElseThrow();
+    }
+
+    private void persistValidationEvidence(WorkflowRecord workflow, RevisionRecord revision, TaskRecord task, BuildValidationEvidence evidence) {
+        store.createValidationAttempt(workflow.id(), revision.id(), task.id(), evidence.attemptNumber(), evidence.commandName(), evidence.exitCode(),
+            evidence.durationMillis(), evidence.timedOut(), evidence.failureClassification(), evidence.stdoutExcerpt(), evidence.stderrExcerpt());
+        store.createArtifact(workflow.id(), revision.id(), task.id(), "validation-attempt-" + evidence.attemptNumber() + ".json", "application/json",
+            write(evidence), write(Map.of("producingTask", task.taskKey())));
+    }
+
+    private String fileHash(Path path) {
+        try {
+            return com.assessment.agentic.persistence.Hashing.sha256(Files.readString(path, StandardCharsets.UTF_8));
+        } catch (Exception exception) {
+            throw new IllegalStateException("Unable to hash generated file for repair.", exception);
+        }
     }
 
     private void persistPatchEvidence(WorkflowRecord workflow, RevisionRecord revision, TaskRecord task, PatchApplicationResult result) {

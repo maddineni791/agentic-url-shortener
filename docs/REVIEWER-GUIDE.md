@@ -167,3 +167,23 @@ Validation command:
 ```
 
 Expected test result for checkpoint 7: 26 tests, 0 failures, 0 errors, 0 skipped.
+
+## Checkpoint 8
+
+Expected behavior:
+
+- Successful generated workspaces run a real fixed Maven Wrapper validation command.
+- Validation attempts persist exit code, duration, timeout flag, failure classification,
+  and bounded stdout/stderr.
+- `GET /api/workflows/{workflowId}/validation-attempts` exposes validation evidence.
+- The deterministic `repair-demonstration` scenario first fails compilation, invokes the
+  repair agent with actual validation evidence, applies a repaired proposal, and validates
+  successfully on the second attempt.
+
+Validation command:
+
+```powershell
+.\mvnw.cmd clean verify
+```
+
+Expected test result for checkpoint 8: 27 tests, 0 failures, 0 errors, 0 skipped.

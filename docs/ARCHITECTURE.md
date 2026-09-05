@@ -174,6 +174,31 @@ The patch step persists reviewer-visible evidence:
 - `unified-diff.patch`;
 - `source-manifest.json`.
 
-The audit stream records `patch.applied` or `patch.policy-rejected`. Validation still does
-not execute the generated repository build; fixed Maven validation, failure diagnosis,
-repair, retry, and rollback are the next checkpoint.
+The audit stream records `patch.applied` or `patch.policy-rejected`.
+
+## Checkpoint 8 Real Validation And Repair
+
+Applied workspaces are now validated with a fixed command owned by the platform:
+`mvnw.cmd clean test`. The command is executed only inside the isolated workspace, uses the
+workspace Maven Wrapper, has a timeout, strips model-provider credentials from the child
+environment, captures bounded stdout and stderr, records duration and exit code, and
+classifies failures as compiler, test, dependency, configuration, timeout, infrastructure,
+or none.
+
+Validation evidence is durable:
+
+- `validation-attempt-1.json`;
+- `validation-attempt-2.json` when repair is invoked;
+- rows in `validation_attempts`;
+- `GET /api/workflows/{workflowId}/validation-attempts`.
+
+The deterministic `repair-demonstration` path now deliberately generates a Java compiler
+failure in the model-produced implementation proposal. The validator captures the actual
+Maven compiler failure, the orchestrator invokes `RepairAgent` with the failed path,
+current file hash, failure class, and bounded logs, and the repair agent returns a
+corrected structured file-operation proposal. That proposal flows through the same patch
+policy and isolated workspace application logic, then Maven validation runs again. The
+repair budget is currently bounded to one repair attempt.
+
+Rollback is identified when repair budget is exhausted, but verified rollback execution is
+still scheduled for the next repository-safety checkpoint.

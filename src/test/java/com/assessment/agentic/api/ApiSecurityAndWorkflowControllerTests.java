@@ -72,7 +72,7 @@ class ApiSecurityAndWorkflowControllerTests {
         mockMvc.perform(get("/api/workflows/" + workflowId + "/tasks")
                 .with(httpBasic("operator", "operator-pass")))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.total").value(11))
+            .andExpect(jsonPath("$.total").value(12))
             .andExpect(jsonPath("$.items[0].status").value("SUCCEEDED"))
             .andExpect(jsonPath("$.items[?(@.taskKey=='implement-change')].taskType").value("IMPLEMENTER"));
 
@@ -83,6 +83,7 @@ class ApiSecurityAndWorkflowControllerTests {
             .andExpect(jsonPath("$.items[?(@.name=='implementation-proposal.json')].sha256").exists())
             .andExpect(jsonPath("$.items[?(@.name=='patch-policy.json')].sha256").exists())
             .andExpect(jsonPath("$.items[?(@.name=='unified-diff.patch')].sha256").exists())
+            .andExpect(jsonPath("$.items[?(@.name=='validation-attempt-1.json')].sha256").exists())
             .andExpect(jsonPath("$.items[?(@.name=='release-readiness.json')].sha256").exists());
 
         mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts/implementation-proposal.json")
@@ -100,7 +101,48 @@ class ApiSecurityAndWorkflowControllerTests {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.items[?(@.eventType=='task.completed')]").isNotEmpty())
             .andExpect(jsonPath("$.items[?(@.eventType=='patch.applied')]").isNotEmpty())
+            .andExpect(jsonPath("$.items[?(@.eventType=='validation.passed')]").isNotEmpty())
             .andExpect(jsonPath("$.items[?(@.eventType=='workflow.awaiting-release-approval')]").isNotEmpty());
+
+        mockMvc.perform(get("/api/workflows/" + workflowId + "/validation-attempts")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items[0].commandName").value("maven-wrapper-clean-test"))
+            .andExpect(jsonPath("$.items[0].exitCode").value(0))
+            .andExpect(jsonPath("$.items[0].failureClassification").value("NONE"));
+    }
+
+    @Test
+    void repairScenarioFailsValidationThenAppliesRepairAndRevalidates() throws Exception {
+        String workflowJson = mockMvc.perform(post("/api/workflows")
+                .with(httpBasic("operator", "operator-pass"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "scenarioKey": "repair-demonstration",
+                      "requirement": "repair scenario: Add URL creation API and redirect endpoint with PostgreSQL storage, rate limiting, blocked host validation, expiry, retention cleanup, and UTC daily analytics."
+                    }
+                    """))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("AWAITING_RELEASE_APPROVAL"))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+
+        String workflowId = workflowJson.replaceAll(".*\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+        mockMvc.perform(get("/api/workflows/" + workflowId + "/validation-attempts")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.total").value(2))
+            .andExpect(jsonPath("$.items[0].failureClassification").value("COMPILER"))
+            .andExpect(jsonPath("$.items[1].exitCode").value(0));
+
+        mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items[?(@.name=='repair-proposal.json')].sha256").exists())
+            .andExpect(jsonPath("$.items[?(@.name=='repair-diff.patch')].sha256").exists())
+            .andExpect(jsonPath("$.items[?(@.name=='validation-attempt-2.json')].sha256").exists());
     }
 
     @Test
