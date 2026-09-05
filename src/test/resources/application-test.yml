@@ -8,3 +8,8 @@ agentic:
     rate-limit-per-minute: 100
     blocked-hosts:
       - blocked.example
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus

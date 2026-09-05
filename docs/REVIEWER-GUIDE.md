@@ -269,3 +269,29 @@ Validation command:
 ```
 
 Expected test result for checkpoint 11: 38 tests, 0 failures, 0 errors, 0 skipped.
+
+## Checkpoint 12
+
+Expected behavior:
+
+- Workflows expose canonical `engineering-plan.json` and `engineering-outcome.json`
+  artifacts.
+- Change approval requires the exact current `engineering-plan.json` hash.
+- Release approval requires the exact current `engineering-outcome.json` hash.
+- Invented or stale approval hashes return HTTP 409 Problem Details with code `CONFLICT`
+  and persist a rejected approval record.
+- Successful release approval persists an approval record and transitions the workflow to
+  `COMPLETED`.
+- `GET /api/workflows/{workflowId}/policies` exposes required gate artifact names and
+  current hashes.
+- `GET /actuator/prometheus` exposes bounded-label platform metrics.
+- `deploy/prometheus/agentic-recording-rules.yml` contains computed reliability
+  indicators instead of raw-counter-only claims.
+
+Validation command:
+
+```powershell
+.\mvnw.cmd clean verify
+```
+
+Expected test result for checkpoint 12: 42 tests, 0 failures, 0 errors, 0 skipped.

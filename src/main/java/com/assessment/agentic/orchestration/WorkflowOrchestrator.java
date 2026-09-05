@@ -26,6 +26,7 @@ import com.assessment.agentic.persistence.TaskStatus;
 import com.assessment.agentic.persistence.WorkflowRecord;
 import com.assessment.agentic.persistence.WorkflowStateStore;
 import com.assessment.agentic.persistence.WorkflowStatus;
+import com.assessment.agentic.observability.WorkflowMetrics;
 import com.assessment.agentic.repository.IsolatedRepositoryService;
 import com.assessment.agentic.repository.PatchApplicationResult;
 import com.assessment.agentic.validation.BuildValidationEvidence;
@@ -59,6 +60,7 @@ public class WorkflowOrchestrator {
     private final IsolatedRepositoryService isolatedRepositoryService;
     private final FixedMavenValidationRunner validationRunner;
     private final ObjectMapper objectMapper;
+    private final WorkflowMetrics workflowMetrics;
 
     public WorkflowOrchestrator(
         WorkflowStateStore store,
@@ -75,7 +77,8 @@ public class WorkflowOrchestrator {
         ReleaseReadinessAgent releaseReadinessAgent,
         IsolatedRepositoryService isolatedRepositoryService,
         FixedMavenValidationRunner validationRunner,
-        ObjectMapper objectMapper
+        ObjectMapper objectMapper,
+        WorkflowMetrics workflowMetrics
     ) {
         this.store = store;
         this.requirementAgent = requirementAgent;
@@ -92,6 +95,7 @@ public class WorkflowOrchestrator {
         this.isolatedRepositoryService = isolatedRepositoryService;
         this.validationRunner = validationRunner;
         this.objectMapper = objectMapper;
+        this.workflowMetrics = workflowMetrics;
     }
 
     @Transactional
@@ -115,6 +119,9 @@ public class WorkflowOrchestrator {
         TaskRecord planTask = run("decompose-tasks", AgentRole.PLANNER, List.of(ambiguityTask.taskKey()), workflow, revision, actor, correlationId,
             task -> plannerAgent.execute(task, contextWithArtifacts(workflow, revision)));
         TaskPlan plan = read(store.findArtifact(revision.id(), "task-plan.json").orElseThrow().content(), TaskPlan.class);
+        store.createArtifact(workflow.id(), revision.id(), planTask.id(), "engineering-plan.json", "application/json",
+            write(Map.of("requirementHash", revision.requirementHash(), "taskPlan", plan)),
+            write(Map.of("canonical", true, "sourceArtifact", "task-plan.json")));
         createPlannedTasks(workflow, revision, plan);
         run("analyze-repository", AgentRole.CODEBASE_ANALYST, List.of(planTask.taskKey()), workflow, revision, actor, correlationId,
             task -> repositoryAgent.execute(task, contextWithArtifacts(workflow, revision)));
@@ -131,7 +138,19 @@ public class WorkflowOrchestrator {
             task -> securityRiskReviewAgent.execute(task, contextWithArtifacts(workflow, revision)));
         run("release-readiness", AgentRole.RELEASE_REVIEWER, List.of("document-outcome", "security-risk-review"), workflow, revision, actor, correlationId,
             task -> releaseReadinessAgent.execute(task, contextWithArtifacts(workflow, revision)));
+        store.createArtifact(workflow.id(), revision.id(), null, "engineering-outcome.json", "application/json",
+            write(Map.of(
+                "workflowId", workflow.id(),
+                "revision", revision.revisionNumber(),
+                "requirementHash", revision.requirementHash(),
+                "planHash", store.findArtifact(revision.id(), "engineering-plan.json").orElseThrow().sha256(),
+                "validationAttempts", store.listValidationAttempts(workflow.id()).size(),
+                "releaseReadinessHash", store.findArtifact(revision.id(), "release-readiness.json").orElseThrow().sha256(),
+                "status", "AWAITING_RELEASE_APPROVAL"
+            )),
+            write(Map.of("canonical", true, "requiredForGate", "release")));
         store.updateWorkflowStatus(workflow.id(), WorkflowStatus.AWAITING_RELEASE_APPROVAL);
+        workflowMetrics.workflowCompleted("awaiting_release_approval");
         store.appendAuditEvent(workflow.id(), revision.id(), null, "workflow.awaiting-release-approval", actor, correlationId,
             "Agent execution completed and exact-evidence release approval is required.");
     }
@@ -156,12 +175,15 @@ public class WorkflowOrchestrator {
         persistPatchEvidence(workflow, revision, task, result);
         if (result.policyDecision().allowed()) {
             store.updateTaskStatus(task.id(), TaskStatus.SUCCEEDED);
+            workflowMetrics.taskCompleted(task.taskType(), "succeeded", 0);
             store.appendAuditEvent(workflow.id(), revision.id(), task.id(), "patch.applied", "PATCH_APPLIER", correlationId,
                 write(Map.of("changedFiles", result.changedFiles(), "workspace", result.workspacePath())));
             validateWithBoundedRepair(workflow, revision, task, result, actor, correlationId);
         } else {
             store.updateTaskStatus(task.id(), TaskStatus.FAILED);
             store.updateWorkflowStatus(workflow.id(), WorkflowStatus.FAILED);
+            workflowMetrics.taskCompleted(task.taskType(), "failed", 0);
+            workflowMetrics.workflowCompleted("failed");
             store.appendAuditEvent(workflow.id(), revision.id(), task.id(), "patch.policy-rejected", "PATCH_APPLIER", correlationId,
                 write(result.policyDecision()));
         }
@@ -184,6 +206,7 @@ public class WorkflowOrchestrator {
         persistValidationEvidence(workflow, revision, validationTask, firstAttempt);
         if (firstAttempt.successful()) {
             store.updateTaskStatus(validationTask.id(), TaskStatus.SUCCEEDED);
+            workflowMetrics.taskCompleted(validationTask.taskType(), "succeeded", firstAttempt.durationMillis());
             store.appendAuditEvent(workflow.id(), revision.id(), validationTask.id(), "validation.passed", "VALIDATOR", correlationId, write(firstAttempt));
             return;
         }
@@ -194,10 +217,14 @@ public class WorkflowOrchestrator {
         persistValidationEvidence(workflow, revision, validationTask, secondAttempt);
         if (secondAttempt.successful()) {
             store.updateTaskStatus(validationTask.id(), TaskStatus.SUCCEEDED);
+            workflowMetrics.taskCompleted(validationTask.taskType(), "succeeded", secondAttempt.durationMillis());
             store.appendAuditEvent(workflow.id(), revision.id(), validationTask.id(), "validation.revalidated", "VALIDATOR", correlationId, write(secondAttempt));
         } else {
             store.updateTaskStatus(validationTask.id(), TaskStatus.FAILED);
             store.updateWorkflowStatus(workflow.id(), WorkflowStatus.FAILED);
+            workflowMetrics.taskCompleted(validationTask.taskType(), "failed", secondAttempt.durationMillis());
+            workflowMetrics.rollback("required");
+            workflowMetrics.workflowCompleted("failed");
             store.appendAuditEvent(workflow.id(), revision.id(), repairTask.id(), "rollback.required", "VALIDATOR", correlationId,
                 "Repair budget exhausted; rollback will be implemented in the rollback checkpoint.");
         }
@@ -235,6 +262,7 @@ public class WorkflowOrchestrator {
         store.createArtifact(workflow.id(), revision.id(), task.id(), "repair-diff.patch", "text/x-diff",
             repairResult.unifiedDiff(), write(Map.of("producingTask", task.taskKey())));
         store.updateTaskStatus(task.id(), repairResult.policyDecision().allowed() ? TaskStatus.SUCCEEDED : TaskStatus.FAILED);
+        workflowMetrics.repairAttempt(repairResult.policyDecision().allowed() ? "proposal_applied" : "policy_rejected", 0);
         store.appendAuditEvent(workflow.id(), revision.id(), task.id(), "repair.applied", actor, correlationId,
             write(Map.of("allowed", repairResult.policyDecision().allowed(), "failureClass", failedAttempt.failureClassification())));
         return store.findTask(task.id()).orElseThrow();
@@ -243,6 +271,7 @@ public class WorkflowOrchestrator {
     private void persistValidationEvidence(WorkflowRecord workflow, RevisionRecord revision, TaskRecord task, BuildValidationEvidence evidence) {
         store.createValidationAttempt(workflow.id(), revision.id(), task.id(), evidence.attemptNumber(), evidence.commandName(), evidence.exitCode(),
             evidence.durationMillis(), evidence.timedOut(), evidence.failureClassification(), evidence.stdoutExcerpt(), evidence.stderrExcerpt());
+        workflowMetrics.validationAttempt(evidence.successful() ? "succeeded" : "failed", evidence.failureClassification(), evidence.durationMillis());
         store.createArtifact(workflow.id(), revision.id(), task.id(), "validation-attempt-" + evidence.attemptNumber() + ".json", "application/json",
             write(evidence), write(Map.of("producingTask", task.taskKey())));
     }
@@ -288,6 +317,7 @@ public class WorkflowOrchestrator {
         AgentExecutionResult<?> result = invoker.invoke(new AgentTask(taskKey, role, "Execute " + taskKey, dependencies, Map.of()));
         persistArtifacts(workflow, revision, taskRecord, result);
         store.updateTaskStatus(taskRecord.id(), TaskStatus.SUCCEEDED);
+        workflowMetrics.taskCompleted(role.name(), "succeeded", 0);
         store.appendAuditEvent(workflow.id(), revision.id(), taskRecord.id(), "task.completed", role.name(), correlationId,
             write(Map.of("artifactCount", result.artifacts().size(), "schema", result.modelResult().schemaName())));
         return store.findTask(taskRecord.id()).orElseThrow();

@@ -50,6 +50,22 @@ public interface WorkflowStateStore {
         String stderrExcerpt
     );
 
+    ApprovalRecord createApproval(
+        UUID workflowId,
+        UUID revisionId,
+        String gate,
+        String actor,
+        String role,
+        String decision,
+        String reason,
+        String requiredArtifactNames,
+        String suppliedHashes,
+        String canonicalReviewedEvidenceHash,
+        String correlationId,
+        boolean valid,
+        String invalidationReason
+    );
+
     Optional<WorkflowRecord> findWorkflow(UUID workflowId);
 
     Optional<RevisionRecord> findRevision(UUID revisionId);
@@ -75,6 +91,8 @@ public interface WorkflowStateStore {
     List<AuditEventRecord> listAuditEvents(UUID workflowId);
 
     List<ValidationAttemptRecord> listValidationAttempts(UUID workflowId);
+
+    List<ApprovalRecord> listApprovals(UUID workflowId);
 
     void updateWorkflowStatus(UUID workflowId, WorkflowStatus status);
 

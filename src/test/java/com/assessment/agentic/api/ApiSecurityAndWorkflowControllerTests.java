@@ -2,14 +2,18 @@ package com.assessment.agentic.api;
 
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
+import static org.hamcrest.Matchers.containsString;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.httpBasic;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 
 import com.assessment.agentic.AgenticSdlcPlatformApplication;
+import com.jayway.jsonpath.JsonPath;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -25,6 +29,9 @@ class ApiSecurityAndWorkflowControllerTests {
 
     @Autowired
     private MockMvc mockMvc;
+
+    @Autowired
+    private MeterRegistry meterRegistry;
 
     @Test
     void exposesScenarioCatalogWithoutAuthentication() throws Exception {
@@ -278,6 +285,139 @@ class ApiSecurityAndWorkflowControllerTests {
                     }
                     """))
             .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void releaseApprovalRequiresExactCurrentEngineeringOutcomeHash() throws Exception {
+        String workflowJson = mockMvc.perform(post("/api/workflows")
+                .with(httpBasic("operator", "operator-pass"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "scenarioKey": "brownfield-analytics",
+                      "requirement": "Add URL creation API and redirect endpoint with PostgreSQL storage, rate limiting, blocked host validation, expiry, retention cleanup, and UTC daily analytics."
+                    }
+                    """))
+            .andExpect(status().isCreated())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+
+        String workflowId = JsonPath.read(workflowJson, "$.id");
+        String outcomeJson = mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts/engineering-outcome.json")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+        String outcomeHash = JsonPath.read(outcomeJson, "$.sha256");
+
+        mockMvc.perform(post("/api/workflows/" + workflowId + "/approvals/release")
+                .with(httpBasic("release-approver", "release-pass"))
+                .header(CorrelationIdFilter.HEADER, "corr-release-approval")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "artifactHash": "%s",
+                      "reason": "validated evidence reviewed"
+                    }
+                    """.formatted(outcomeHash)))
+            .andExpect(status().isAccepted())
+            .andExpect(jsonPath("$.gate").value("RELEASE"))
+            .andExpect(jsonPath("$.decision").value("APPROVED"))
+            .andExpect(jsonPath("$.canonicalReviewedEvidenceHash").value(outcomeHash))
+            .andExpect(jsonPath("$.valid").value(true));
+
+        mockMvc.perform(get("/api/workflows/" + workflowId)
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("COMPLETED"));
+
+        mockMvc.perform(get("/api/workflows/" + workflowId + "/approvals")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items[0].gate").value("RELEASE"))
+            .andExpect(jsonPath("$.items[0].suppliedHashes").value(outcomeHash));
+    }
+
+    @Test
+    void metricsRegistryReceivesWorkflowAndModelMetrics() throws Exception {
+        String workflowJson = mockMvc.perform(post("/api/workflows")
+                .with(httpBasic("operator", "operator-pass"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "scenarioKey": "brownfield-analytics",
+                      "requirement": "Add URL creation API and redirect endpoint with PostgreSQL storage, rate limiting, blocked host validation, expiry, retention cleanup, and UTC daily analytics."
+                    }
+                    """))
+            .andExpect(status().isCreated())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+        String workflowId = JsonPath.read(workflowJson, "$.id");
+        String outcomeJson = mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts/engineering-outcome.json")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+        String outcomeHash = JsonPath.read(outcomeJson, "$.sha256");
+        mockMvc.perform(post("/api/workflows/" + workflowId + "/approvals/release")
+                .with(httpBasic("release-approver", "release-pass"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "artifactHash": "%s",
+                      "reason": "validated evidence reviewed"
+                    }
+                    """.formatted(outcomeHash)))
+            .andExpect(status().isAccepted());
+
+        org.assertj.core.api.Assertions.assertThat(meterRegistry.find("agentic_workflows_submitted_total").counter()).isNotNull();
+        org.assertj.core.api.Assertions.assertThat(meterRegistry.find("agentic_model_calls_total").counter()).isNotNull();
+        org.assertj.core.api.Assertions.assertThat(meterRegistry.find("agentic_validation_attempts_total").counter()).isNotNull();
+        mockMvc.perform(get("/actuator/prometheus"))
+            .andExpect(status().isOk())
+            .andExpect(content().string(containsString("agentic_workflows_submitted_total")))
+            .andExpect(content().string(containsString("agentic_model_calls_total")))
+            .andExpect(content().string(containsString("agentic_validation_attempts_total")));
+    }
+
+    @Test
+    void approvalRejectsInventedArtifactHashes() throws Exception {
+        String workflowJson = mockMvc.perform(post("/api/workflows")
+                .with(httpBasic("operator", "operator-pass"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "scenarioKey": "brownfield-analytics",
+                      "requirement": "Add URL creation API and redirect endpoint with PostgreSQL storage, rate limiting, blocked host validation, expiry, retention cleanup, and UTC daily analytics."
+                    }
+                    """))
+            .andExpect(status().isCreated())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+
+        String workflowId = JsonPath.read(workflowJson, "$.id");
+        mockMvc.perform(post("/api/workflows/" + workflowId + "/approvals/release")
+                .with(httpBasic("release-approver", "release-pass"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "artifactHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "reason": "invented"
+                    }
+                    """))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("CONFLICT"));
+
+        mockMvc.perform(get("/api/workflows/" + workflowId + "/approvals")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items[0].decision").value("REJECTED"))
+            .andExpect(jsonPath("$.items[0].valid").value(false));
     }
 
     @Test

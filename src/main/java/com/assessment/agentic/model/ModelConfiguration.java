@@ -1,6 +1,7 @@
 package com.assessment.agentic.model;
 
 import com.assessment.agentic.persistence.SecretRedactor;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.validation.Validator;
 import java.time.Clock;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -28,9 +29,10 @@ public class ModelConfiguration {
         DeterministicModelProvider deterministicProvider,
         OpenAiResponsesModelProvider openAiProvider,
         SecretRedactor secretRedactor,
-        Validator validator
+        Validator validator,
+        MeterRegistry meterRegistry
     ) {
         ModelProvider selected = properties.getProvider() == ModelProviderType.OPENAI ? openAiProvider : deterministicProvider;
-        return new ModelGateway(properties, selected, secretRedactor, validator);
+        return new ModelGateway(properties, selected, secretRedactor, validator, meterRegistry);
     }
 }

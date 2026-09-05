@@ -3,6 +3,7 @@ package com.assessment.agentic.api;
 import com.assessment.agentic.orchestration.WorkflowOrchestrator;
 import com.assessment.agentic.persistence.ArtifactRecord;
 import com.assessment.agentic.persistence.AuditEventRecord;
+import com.assessment.agentic.persistence.ApprovalRecord;
 import com.assessment.agentic.persistence.Hashing;
 import com.assessment.agentic.persistence.IdempotencyRecord;
 import com.assessment.agentic.persistence.RevisionRecord;
@@ -10,6 +11,8 @@ import com.assessment.agentic.persistence.TaskRecord;
 import com.assessment.agentic.persistence.ValidationAttemptRecord;
 import com.assessment.agentic.persistence.WorkflowRecord;
 import com.assessment.agentic.persistence.WorkflowStateStore;
+import com.assessment.agentic.persistence.WorkflowStatus;
+import com.assessment.agentic.observability.WorkflowMetrics;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -33,10 +36,12 @@ public class WorkflowController {
 
     private final WorkflowStateStore store;
     private final WorkflowOrchestrator orchestrator;
+    private final WorkflowMetrics workflowMetrics;
 
-    public WorkflowController(WorkflowStateStore store, WorkflowOrchestrator orchestrator) {
+    public WorkflowController(WorkflowStateStore store, WorkflowOrchestrator orchestrator, WorkflowMetrics workflowMetrics) {
         this.store = store;
         this.orchestrator = orchestrator;
+        this.workflowMetrics = workflowMetrics;
     }
 
     @PostMapping("/api/workflows")
@@ -52,13 +57,16 @@ public class WorkflowController {
             if (existing.isPresent()) {
                 IdempotencyRecord record = existing.get();
                 if (!record.requestHash().equals(requestHash)) {
+                    workflowMetrics.idempotencyReplay("conflict");
                     throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency key already used with a different request.");
                 }
                 WorkflowRecord replayed = store.findWorkflow(record.workflowId())
                     .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency record points to a missing workflow."));
+                workflowMetrics.idempotencyReplay("matched");
                 return ResponseEntity.status(record.responseStatus()).body(WorkflowResponse.from(replayed));
             }
         }
+        workflowMetrics.workflowSubmitted(request.scenarioKey());
         WorkflowRecord workflow = store.createWorkflow(request.scenarioKey(), request.requirement());
         if (idempotencyKey != null && !idempotencyKey.isBlank()) {
             store.createIdempotencyRecord(principal.getName(), idempotencyKey.trim(), requestHash, workflow.id(), HttpStatus.CREATED.value());
@@ -138,16 +146,30 @@ public class WorkflowController {
 
     @PostMapping("/api/workflows/{workflowId}/approvals/change")
     @PreAuthorize("hasRole('CHANGE_APPROVER')")
-    ResponseEntity<ActionAcceptedResponse> approveChange(@PathVariable("workflowId") UUID workflowId, @Valid @RequestBody ApprovalRequest request) {
-        requireWorkflow(workflowId);
-        return ResponseEntity.accepted().body(new ActionAcceptedResponse("change approval accepted for later governance checkpoint"));
+    ResponseEntity<ApprovalResponse> approveChange(
+        @PathVariable("workflowId") UUID workflowId,
+        @Valid @RequestBody ApprovalRequest request,
+        Principal principal,
+        jakarta.servlet.http.HttpServletRequest servletRequest
+    ) {
+        WorkflowRecord workflow = requireWorkflow(workflowId);
+        ApprovalRecord approval = recordApproval(workflow, "CHANGE", "ROLE_CHANGE_APPROVER", "engineering-plan.json", request, principal, servletRequest);
+        return ResponseEntity.accepted().body(ApprovalResponse.from(approval));
     }
 
     @PostMapping("/api/workflows/{workflowId}/approvals/release")
     @PreAuthorize("hasRole('RELEASE_APPROVER')")
-    ResponseEntity<ActionAcceptedResponse> approveRelease(@PathVariable("workflowId") UUID workflowId, @Valid @RequestBody ApprovalRequest request) {
-        requireWorkflow(workflowId);
-        return ResponseEntity.accepted().body(new ActionAcceptedResponse("release approval accepted for later governance checkpoint"));
+    ResponseEntity<ApprovalResponse> approveRelease(
+        @PathVariable("workflowId") UUID workflowId,
+        @Valid @RequestBody ApprovalRequest request,
+        Principal principal,
+        jakarta.servlet.http.HttpServletRequest servletRequest
+    ) {
+        WorkflowRecord workflow = requireWorkflow(workflowId);
+        ApprovalRecord approval = recordApproval(workflow, "RELEASE", "ROLE_RELEASE_APPROVER", "engineering-outcome.json", request, principal, servletRequest);
+        store.updateWorkflowStatus(workflow.id(), WorkflowStatus.COMPLETED);
+        workflowMetrics.workflowCompleted("completed");
+        return ResponseEntity.accepted().body(ApprovalResponse.from(approval));
     }
 
     @PostMapping("/api/workflows/{workflowId}/safe-stop")
@@ -160,15 +182,23 @@ public class WorkflowController {
     @GetMapping("/api/workflows/{workflowId}/policies")
     @PreAuthorize("hasRole('OPERATOR') or hasRole('CHANGE_APPROVER') or hasRole('RELEASE_APPROVER')")
     PageResponse<PolicyResponse> policies(@PathVariable("workflowId") UUID workflowId) {
-        requireWorkflow(workflowId);
-        return new PageResponse<>(List.of(), 0, 50, 0);
+        WorkflowRecord workflow = requireWorkflow(workflowId);
+        RevisionRecord revision = currentRevision(workflow);
+        List<PolicyResponse> items = List.of(
+            artifactPolicy(revision, "engineering-plan.json", "change-approval"),
+            artifactPolicy(revision, "engineering-outcome.json", "release-approval")
+        );
+        return new PageResponse<>(items, 0, 50, items.size());
     }
 
     @GetMapping("/api/workflows/{workflowId}/approvals")
     @PreAuthorize("hasRole('OPERATOR') or hasRole('CHANGE_APPROVER') or hasRole('RELEASE_APPROVER')")
     PageResponse<ApprovalResponse> approvals(@PathVariable("workflowId") UUID workflowId) {
         requireWorkflow(workflowId);
-        return new PageResponse<>(List.of(), 0, 50, 0);
+        List<ApprovalResponse> items = store.listApprovals(workflowId).stream()
+            .map(ApprovalResponse::from)
+            .toList();
+        return new PageResponse<>(items, 0, 50, items.size());
     }
 
     @GetMapping("/api/workflows/{workflowId}/audit-events")
@@ -194,6 +224,47 @@ public class WorkflowController {
     private WorkflowRecord requireWorkflow(UUID workflowId) {
         return store.findWorkflow(workflowId)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow not found."));
+    }
+
+    private ApprovalRecord recordApproval(
+        WorkflowRecord workflow,
+        String gate,
+        String role,
+        String artifactName,
+        ApprovalRequest request,
+        Principal principal,
+        jakarta.servlet.http.HttpServletRequest servletRequest
+    ) {
+        RevisionRecord revision = currentRevision(workflow);
+        ArtifactRecord artifact = store.findArtifact(revision.id(), artifactName)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "Required approval artifact is not available."));
+        if (!artifact.sha256().equals(request.artifactHash())) {
+            store.createApproval(workflow.id(), revision.id(), gate, principal.getName(), role, "REJECTED", request.reason(),
+                artifactName, request.artifactHash(), artifact.sha256(), correlationId(servletRequest), false, "Supplied hash did not match current revision artifact.");
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Supplied artifact hash does not match current revision " + artifactName + ".");
+        }
+        ApprovalRecord approval = store.createApproval(workflow.id(), revision.id(), gate, principal.getName(), role, "APPROVED", request.reason(),
+            artifactName, request.artifactHash(), artifact.sha256(), correlationId(servletRequest), true, null);
+        store.appendAuditEvent(workflow.id(), revision.id(), null, "approval." + gate.toLowerCase() + ".approved", principal.getName(),
+            correlationId(servletRequest), artifactName + "=" + artifact.sha256());
+        return approval;
+    }
+
+    private PolicyResponse artifactPolicy(RevisionRecord revision, String artifactName, String gate) {
+        return store.findArtifact(revision.id(), artifactName)
+            .map(artifact -> new PolicyResponse(gate, "REQUIRES_HASH", artifactName, artifact.sha256()))
+            .orElse(new PolicyResponse(gate, "MISSING_REQUIRED_ARTIFACT", artifactName, null));
+    }
+
+    private RevisionRecord currentRevision(WorkflowRecord workflow) {
+        return store.findRevisionForWorkflowNumber(workflow.id(), workflow.currentRevision())
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Revision not found."));
+    }
+
+    private String correlationId(jakarta.servlet.http.HttpServletRequest request) {
+        Object value = request.getAttribute(CorrelationIdFilter.HEADER);
+        String header = request.getHeader(CorrelationIdFilter.HEADER);
+        return header == null || header.isBlank() ? String.valueOf(value) : header;
     }
 
     public record WorkflowSubmissionRequest(
@@ -267,10 +338,24 @@ public class WorkflowController {
     public record ActionAcceptedResponse(String message) {
     }
 
-    public record PolicyResponse(String policy, String decision) {
+    public record PolicyResponse(String policy, String decision, String requiredArtifactName, String currentArtifactHash) {
     }
 
-    public record ApprovalResponse(String gate, String decision) {
+    public record ApprovalResponse(
+        String gate,
+        String decision,
+        String actor,
+        String role,
+        String requiredArtifactNames,
+        String suppliedHashes,
+        String canonicalReviewedEvidenceHash,
+        boolean valid,
+        String invalidationReason
+    ) {
+        static ApprovalResponse from(ApprovalRecord approval) {
+            return new ApprovalResponse(approval.gate(), approval.decision(), approval.actor(), approval.role(), approval.requiredArtifactNames(),
+                approval.suppliedHashes(), approval.canonicalReviewedEvidenceHash(), approval.valid(), approval.invalidationReason());
+        }
     }
 
     public record AuditEventResponse(String eventType, String correlationId, String actor, String payloadHash) {

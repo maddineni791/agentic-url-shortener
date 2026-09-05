@@ -1,8 +1,11 @@
 package com.assessment.agentic.model;
 
 import com.assessment.agentic.persistence.SecretRedactor;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validator;
+import java.time.Duration;
 import java.util.Set;
 
 public class ModelGateway {
@@ -11,12 +14,14 @@ public class ModelGateway {
     private final ModelProvider provider;
     private final SecretRedactor secretRedactor;
     private final Validator validator;
+    private final MeterRegistry meterRegistry;
 
-    public ModelGateway(ModelProperties properties, ModelProvider provider, SecretRedactor secretRedactor, Validator validator) {
+    public ModelGateway(ModelProperties properties, ModelProvider provider, SecretRedactor secretRedactor, Validator validator, MeterRegistry meterRegistry) {
         this.properties = properties;
         this.provider = provider;
         this.secretRedactor = secretRedactor;
         this.validator = validator;
+        this.meterRegistry = meterRegistry;
     }
 
     public ModelProviderType activeProviderType() {
@@ -37,12 +42,18 @@ public class ModelGateway {
             request.requiredFields(),
             request.context()
         );
-        ModelResult result = provider.invoke(boundedRequest, properties.getTimeout());
-        validateResult(request, result);
-        if (result.outputCharacters() > properties.getMaxOutputChars()) {
-            throw new ModelContractException("Model output exceeds configured bound.");
+        try {
+            ModelResult result = provider.invoke(boundedRequest, properties.getTimeout());
+            validateResult(request, result);
+            if (result.outputCharacters() > properties.getMaxOutputChars()) {
+                throw new ModelContractException("Model output exceeds configured bound.");
+            }
+            recordModelMetrics(request, result, "succeeded");
+            return result;
+        } catch (RuntimeException exception) {
+            meterRegistry.counter("agentic_model_calls_total", "provider", provider.type().name(), "outcome", "failed").increment();
+            throw exception;
         }
-        return result;
     }
 
     private void validate(ModelRequest request) {
@@ -60,6 +71,21 @@ public class ModelGateway {
             if (!result.fields().containsKey(key) || result.fields().get(key).isBlank()) {
                 throw new ModelContractException("Model result missing required field: " + key);
             }
+        }
+    }
+
+    private void recordModelMetrics(ModelRequest request, ModelResult result, String outcome) {
+        meterRegistry.counter("agentic_model_calls_total", "provider", provider.type().name(), "outcome", outcome).increment();
+        Timer.builder("agentic_model_latency")
+            .tag("provider", provider.type().name())
+            .tag("outcome", outcome)
+            .register(meterRegistry)
+            .record(result.latency() == null ? Duration.ZERO : result.latency());
+        if (result.inputTokens() != null) {
+            meterRegistry.counter("agentic_model_tokens_total", "provider", provider.type().name(), "direction", "input").increment(result.inputTokens());
+        }
+        if (result.outputTokens() != null) {
+            meterRegistry.counter("agentic_model_tokens_total", "provider", provider.type().name(), "direction", "output").increment(result.outputTokens());
         }
     }
 }

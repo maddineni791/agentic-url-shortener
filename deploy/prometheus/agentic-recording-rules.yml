@@ -1,0 +1,20 @@
+groups:
+  - name: agentic-sdlc-platform
+    interval: 30s
+    rules:
+      - record: agentic:workflow_success_rate:5m
+        expr: sum(rate(agentic_workflows_terminal_total{outcome="completed"}[5m])) / sum(rate(agentic_workflows_submitted_total[5m]))
+      - record: agentic:retry_frequency_per_workflow:5m
+        expr: sum(rate(agentic_tasks_total{outcome="retried"}[5m])) / sum(rate(agentic_workflows_submitted_total[5m]))
+      - record: agentic:rollback_frequency_per_workflow:5m
+        expr: sum(rate(agentic_rollbacks_total[5m])) / sum(rate(agentic_workflows_submitted_total[5m]))
+      - record: agentic:mean_time_to_repair_seconds:5m
+        expr: sum(rate(agentic_repair_duration_seconds_sum[5m])) / sum(rate(agentic_repair_duration_seconds_count[5m]))
+      - record: agentic:repair_success_rate:5m
+        expr: sum(rate(agentic_repair_attempts_total{outcome="proposal_applied"}[5m])) / sum(rate(agentic_repair_attempts_total[5m]))
+      - record: agentic:workflow_duration_p95_seconds:5m
+        expr: histogram_quantile(0.95, sum by (le) (rate(agentic_task_duration_seconds_bucket[5m])))
+      - record: agentic:validation_failure_rate:5m
+        expr: sum(rate(agentic_validation_attempts_total{outcome="failed"}[5m])) / sum(rate(agentic_validation_attempts_total[5m]))
+      - record: agentic:model_failure_rate:5m
+        expr: sum(rate(agentic_model_calls_total{outcome="failed"}[5m])) / sum(rate(agentic_model_calls_total[5m]))

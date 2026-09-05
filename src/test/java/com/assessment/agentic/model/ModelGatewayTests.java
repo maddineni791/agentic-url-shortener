@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.assessment.agentic.persistence.SecretRedactor;
 import jakarta.validation.Validation;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -18,7 +19,8 @@ class ModelGatewayTests {
             properties,
             new DeterministicModelProvider(java.time.Clock.systemUTC()),
             new SecretRedactor(),
-            Validation.buildDefaultValidatorFactory().getValidator()
+            Validation.buildDefaultValidatorFactory().getValidator(),
+            new SimpleMeterRegistry()
         );
 
         ModelResult result = gateway.invoke(new ModelRequest(
@@ -42,7 +44,8 @@ class ModelGatewayTests {
             new ModelProperties(),
             provider,
             new SecretRedactor(),
-            Validation.buildDefaultValidatorFactory().getValidator()
+            Validation.buildDefaultValidatorFactory().getValidator(),
+            new SimpleMeterRegistry()
         );
 
         gateway.invoke(new ModelRequest(
@@ -64,7 +67,8 @@ class ModelGatewayTests {
             new ModelProperties(),
             new CapturingProvider(Map.of("other", "value")),
             new SecretRedactor(),
-            Validation.buildDefaultValidatorFactory().getValidator()
+            Validation.buildDefaultValidatorFactory().getValidator(),
+            new SimpleMeterRegistry()
         );
 
         assertThatThrownBy(() -> gateway.invoke(new ModelRequest(
@@ -86,7 +90,8 @@ class ModelGatewayTests {
             properties,
             new CapturingProvider(Map.of("summary", "ok")),
             new SecretRedactor(),
-            Validation.buildDefaultValidatorFactory().getValidator()
+            Validation.buildDefaultValidatorFactory().getValidator(),
+            new SimpleMeterRegistry()
         );
 
         assertThatThrownBy(() -> gateway.invoke(new ModelRequest(

@@ -273,3 +273,24 @@ Task status APIs now include lease owner, lease expiry, and fencing token so rev
 inspect distributed-execution state. Commit 11 proves the persistence and API contracts;
 automatic background recovery and multi-instance scheduled claims are still planned for the
 distributed recovery checkpoint.
+
+## Checkpoint 12 Governance And Observability
+
+The approval endpoints now enforce exact current-revision evidence:
+
+- `POST /api/workflows/{workflowId}/approvals/change` requires the current
+  `engineering-plan.json` SHA-256 hash and the `CHANGE_APPROVER` role;
+- `POST /api/workflows/{workflowId}/approvals/release` requires the current
+  `engineering-outcome.json` SHA-256 hash and the `RELEASE_APPROVER` role;
+- invented, stale, or unrelated hashes produce HTTP 409 Problem Details and a persisted
+  rejected approval record;
+- successful release approval transitions the workflow to `COMPLETED`.
+
+The orchestrator now emits canonical `engineering-plan.json` and
+`engineering-outcome.json` artifacts so human gates reference stable evidence names rather
+than informal lifecycle artifacts.
+
+Micrometer metrics are exposed at `GET /actuator/prometheus`. Metric labels are bounded to
+scenario keys, task types, outcomes, providers, token direction, and validation failure
+classes. Recording rules in `deploy/prometheus/agentic-recording-rules.yml` define the
+computed reliability indicators required by the assessment.

@@ -227,6 +227,49 @@ public class JdbcWorkflowStateStore implements WorkflowStateStore {
     }
 
     @Override
+    public ApprovalRecord createApproval(
+        UUID workflowId,
+        UUID revisionId,
+        String gate,
+        String actor,
+        String role,
+        String decision,
+        String reason,
+        String requiredArtifactNames,
+        String suppliedHashes,
+        String canonicalReviewedEvidenceHash,
+        String correlationId,
+        boolean valid,
+        String invalidationReason
+    ) {
+        UUID id = UUID.randomUUID();
+        jdbcTemplate.update(
+            """
+            insert into approvals
+            (id, workflow_id, revision_id, gate, actor, role, decision, reason, required_artifact_names, supplied_hashes,
+             canonical_reviewed_evidence_hash, correlation_id, valid, invalidation_reason, decided_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            id,
+            workflowId,
+            revisionId,
+            gate,
+            actor,
+            role,
+            decision,
+            reason,
+            requiredArtifactNames,
+            suppliedHashes,
+            canonicalReviewedEvidenceHash,
+            correlationId,
+            valid,
+            invalidationReason,
+            Timestamp.from(clock.instant())
+        );
+        return jdbcTemplate.queryForObject("select * from approvals where id = ?", this::mapApproval, id);
+    }
+
+    @Override
     public Optional<WorkflowRecord> findWorkflow(UUID workflowId) {
         return jdbcTemplate.query("select * from workflows where id = ?", this::mapWorkflow, workflowId).stream().findFirst();
     }
@@ -392,6 +435,15 @@ public class JdbcWorkflowStateStore implements WorkflowStateStore {
     }
 
     @Override
+    public List<ApprovalRecord> listApprovals(UUID workflowId) {
+        return jdbcTemplate.query(
+            "select * from approvals where workflow_id = ? order by decided_at",
+            this::mapApproval,
+            workflowId
+        );
+    }
+
+    @Override
     public void updateWorkflowStatus(UUID workflowId, WorkflowStatus status) {
         jdbcTemplate.update(
             "update workflows set status = ?, updated_at = ? where id = ?",
@@ -526,6 +578,26 @@ public class JdbcWorkflowStateStore implements WorkflowStateStore {
             rs.getString("stdout_excerpt"),
             rs.getString("stderr_excerpt"),
             rs.getTimestamp("created_at").toInstant()
+        );
+    }
+
+    private ApprovalRecord mapApproval(ResultSet rs, int rowNum) throws SQLException {
+        return new ApprovalRecord(
+            rs.getObject("id", UUID.class),
+            rs.getObject("workflow_id", UUID.class),
+            rs.getObject("revision_id", UUID.class),
+            rs.getString("gate"),
+            rs.getString("actor"),
+            rs.getString("role"),
+            rs.getString("decision"),
+            rs.getString("reason"),
+            rs.getString("required_artifact_names"),
+            rs.getString("supplied_hashes"),
+            rs.getString("canonical_reviewed_evidence_hash"),
+            rs.getString("correlation_id"),
+            rs.getBoolean("valid"),
+            rs.getString("invalidation_reason"),
+            rs.getTimestamp("decided_at").toInstant()
         );
     }
 }
