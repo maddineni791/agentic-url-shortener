@@ -37,6 +37,7 @@ public class IsolatedRepositoryService {
             Path workspace = createWorkspace(workflowId, revision);
             String baselineManifest = manifestJson(workspace);
             String baselineManifestHash = Hashing.sha256(baselineManifest);
+            snapshotBaseline(workspace);
             List<String> changedFiles = new ArrayList<>();
             StringBuilder diff = new StringBuilder();
             for (FileOperationProposal operation : operations) {
@@ -86,6 +87,69 @@ public class IsolatedRepositoryService {
             return manifestJson(Path.of(workspacePath));
         } catch (IOException exception) {
             throw new RepositoryMutationException("Unable to read workspace manifest.", exception);
+        }
+    }
+
+    /** Resolves the workspace for a workflow revision and restores it to its immutable baseline. */
+    public RollbackResult rollback(String workflowId, int revision) {
+        Path root = properties.getRoot().toAbsolutePath().normalize();
+        return rollback(root.resolve(workflowId).resolve("revision-" + revision).toString());
+    }
+
+    /**
+     * Restores {@code workspacePath} to the immutable baseline snapshot captured when the patch was applied
+     * and verifies the restored tree against the baseline SHA-256 manifest.
+     */
+    public RollbackResult rollback(String workspacePath) {
+        if (workspacePath == null || workspacePath.isBlank()) {
+            return new RollbackResult(false, false, 0, "", "no-workspace-path");
+        }
+        Path workspace = Path.of(workspacePath).toAbsolutePath().normalize();
+        Path baseline = workspace.resolveSibling(workspace.getFileName() + "-baseline");
+        try {
+            if (!Files.exists(workspace) && !Files.exists(baseline)) {
+                return new RollbackResult(false, false, 0, "", "workspace-missing");
+            }
+            if (!Files.exists(baseline)) {
+                return new RollbackResult(true, false, 0, "", "baseline-missing");
+            }
+            if (Files.exists(workspace)) {
+                deleteTree(workspace);
+            }
+            copyTree(baseline, workspace);
+            String restoredManifest = manifestJson(workspace);
+            String restoredHash = Hashing.sha256(restoredManifest);
+            String baselineHash = Hashing.sha256(manifestJson(baseline));
+            int restoredFiles;
+            try (var stream = Files.walk(workspace)) {
+                restoredFiles = (int) stream.filter(Files::isRegularFile).count();
+            }
+            boolean verified = restoredHash.equals(baselineHash);
+            return new RollbackResult(true, verified, restoredFiles, restoredHash, verified ? "verified" : "manifest-mismatch");
+        } catch (IOException exception) {
+            throw new RepositoryMutationException("Unable to roll back isolated workspace.", exception);
+        }
+    }
+
+    private void snapshotBaseline(Path workspace) throws IOException {
+        Path baseline = workspace.resolveSibling(workspace.getFileName() + "-baseline");
+        if (Files.exists(baseline)) {
+            deleteTree(baseline);
+        }
+        copyTree(workspace, baseline);
+    }
+
+    private void copyTree(Path source, Path target) throws IOException {
+        try (var stream = Files.walk(source)) {
+            for (Path path : stream.toList()) {
+                Path destination = target.resolve(source.relativize(path).toString()).normalize();
+                if (Files.isDirectory(path)) {
+                    Files.createDirectories(destination);
+                } else {
+                    Files.createDirectories(destination.getParent());
+                    Files.copy(path, destination, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
         }
     }
 

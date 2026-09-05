@@ -14,6 +14,8 @@ public interface WorkflowStateStore {
 
     RevisionRecord createRevision(UUID workflowId, int revisionNumber, String requirementText, UUID parentRevisionId);
 
+    void markRevisionStatus(UUID revisionId, RevisionStatus status, String reason);
+
     TaskRecord createTask(UUID workflowId, UUID revisionId, String taskKey, String taskType, String dependsOnJson);
 
     ArtifactRecord createArtifact(

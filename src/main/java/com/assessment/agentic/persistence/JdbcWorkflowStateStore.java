@@ -101,6 +101,23 @@ public class JdbcWorkflowStateStore implements WorkflowStateStore {
     }
 
     @Override
+    @Transactional
+    public void markRevisionStatus(UUID revisionId, RevisionStatus status, String reason) {
+        boolean invalidated = status == RevisionStatus.INVALIDATED;
+        jdbcTemplate.update(
+            """
+            update workflow_revisions
+            set status = ?, invalidation_reason = ?, invalidated_at = ?
+            where id = ?
+            """,
+            status.name(),
+            reason,
+            invalidated ? Timestamp.from(clock.instant()) : null,
+            revisionId
+        );
+    }
+
+    @Override
     public TaskRecord createTask(UUID workflowId, UUID revisionId, String taskKey, String taskType, String dependsOnJson) {
         UUID id = UUID.randomUUID();
         Instant now = clock.instant();

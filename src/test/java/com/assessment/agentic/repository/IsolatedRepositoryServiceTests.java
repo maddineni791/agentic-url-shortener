@@ -39,6 +39,37 @@ class IsolatedRepositoryServiceTests {
     }
 
     @Test
+    void rollbackRestoresWorkspaceToVerifiedBaseline() throws Exception {
+        IsolatedRepositoryService service = service();
+        FileOperationProposal production = create("src/main/java/com/example/App.java", "class App {}\n");
+        FileOperationProposal test = create("src/test/java/com/example/AppTests.java", "class AppTests {}\n");
+
+        PatchApplicationResult applied = service.apply("wf-rollback", 1, List.of(new FileOperationProposalSet(
+            List.of(production, test),
+            List.of(production.normalizedRelativePath(), test.normalizedRelativePath()),
+            List.of("lineage")
+        )));
+        Path workspace = Path.of(applied.workspacePath());
+        assertThat(Files.exists(workspace.resolve("src/main/java/com/example/App.java"))).isTrue();
+
+        RollbackResult rollback = service.rollback(applied.workspacePath());
+
+        assertThat(rollback.workspaceExisted()).isTrue();
+        assertThat(rollback.verified()).isTrue();
+        assertThat(rollback.restoredManifestHash()).isEqualTo(applied.baselineManifestHash());
+        assertThat(Files.exists(workspace.resolve("src/main/java/com/example/App.java"))).isFalse();
+        assertThat(Files.exists(workspace.resolve("src/test/java/com/example/AppTests.java"))).isFalse();
+        assertThat(Files.exists(workspace.resolve("pom.xml"))).isTrue();
+    }
+
+    @Test
+    void rollbackByWorkflowRevisionReportsMissingWorkspace() {
+        RollbackResult rollback = service().rollback("wf-never-created", 1);
+        assertThat(rollback.workspaceExisted()).isFalse();
+        assertThat(rollback.detail()).isEqualTo("workspace-missing");
+    }
+
+    @Test
     void rejectsTraversalDuplicateAndUnsupportedExtensionBeforeWriting() {
         IsolatedRepositoryService service = service();
         FileOperationProposal traversal = create("../escape.java", "class Escape {}\n");

@@ -33,6 +33,23 @@ class ApiSecurityAndWorkflowControllerTests {
     @Autowired
     private MeterRegistry meterRegistry;
 
+    /** Reviews and approves the current-revision engineering plan so the workflow leaves the change gate. */
+    private String approveChangeGate(String workflowId) throws Exception {
+        String planJson = mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts/engineering-plan.json")
+                .with(httpBasic("change-approver", "change-pass")))
+            .andExpect(status().isOk())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+        String planHash = JsonPath.read(planJson, "$.sha256");
+        mockMvc.perform(post("/api/workflows/" + workflowId + "/approvals/change")
+                .with(httpBasic("change-approver", "change-pass"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"artifactHash\":\"" + planHash + "\",\"reason\":\"engineering plan reviewed\"}"))
+            .andExpect(status().isAccepted());
+        return planHash;
+    }
+
     @Test
     void exposesScenarioCatalogWithoutAuthentication() throws Exception {
         mockMvc.perform(get("/api/scenarios").header(CorrelationIdFilter.HEADER, "corr-scenarios"))
@@ -43,8 +60,8 @@ class ApiSecurityAndWorkflowControllerTests {
     }
 
     @Test
-    void submitsWorkflowForOperatorAndPersistsRevision() throws Exception {
-        mockMvc.perform(post("/api/workflows")
+    void submitsWorkflowForOperatorAndPausesAtChangeGate() throws Exception {
+        String json = mockMvc.perform(post("/api/workflows")
                 .with(httpBasic("operator", "operator-pass"))
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
@@ -55,8 +72,77 @@ class ApiSecurityAndWorkflowControllerTests {
                     """))
             .andExpect(status().isCreated())
             .andExpect(jsonPath("$.scenarioKey").value("greenfield-url-shortener"))
-            .andExpect(jsonPath("$.status").value("AWAITING_RELEASE_APPROVAL"))
-            .andExpect(jsonPath("$.currentRevision").value(1));
+            .andExpect(jsonPath("$.status").value("AWAITING_CHANGE_APPROVAL"))
+            .andExpect(jsonPath("$.currentRevision").value(1))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+        String workflowId = JsonPath.read(json, "$.id");
+
+        approveChangeGate(workflowId);
+
+        mockMvc.perform(get("/api/workflows/" + workflowId)
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("AWAITING_RELEASE_APPROVAL"));
+    }
+
+    @Test
+    void changeGateBlocksRepositoryMutationUntilExactPlanHash() throws Exception {
+        String json = mockMvc.perform(post("/api/workflows")
+                .with(httpBasic("operator", "operator-pass"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "scenarioKey": "brownfield-analytics",
+                      "requirement": "Add URL creation API and redirect endpoint with PostgreSQL storage, rate limiting, blocked host validation, expiry, retention cleanup, and UTC daily analytics."
+                    }
+                    """))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("AWAITING_CHANGE_APPROVAL"))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+        String workflowId = JsonPath.read(json, "$.id");
+
+        mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items[?(@.name=='engineering-plan.json')].sha256").exists())
+            .andExpect(jsonPath("$.items[?(@.name=='implementation-proposal.json')]").isEmpty());
+
+        mockMvc.perform(post("/api/workflows/" + workflowId + "/approvals/change")
+                .with(httpBasic("change-approver", "change-pass"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "artifactHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "reason": "guessed"
+                    }
+                    """))
+            .andExpect(status().isConflict());
+
+        approveChangeGate(workflowId);
+
+        mockMvc.perform(get("/api/workflows/" + workflowId)
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("AWAITING_RELEASE_APPROVAL"));
+
+        mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items[?(@.name=='implementation-proposal.json')].sha256").exists());
+
+        String audit = mockMvc.perform(get("/api/workflows/" + workflowId + "/audit-events")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+        org.assertj.core.api.Assertions.assertThat(audit)
+            .contains("workflow.awaiting-change-approval")
+            .contains("workflow.change-approved-resumed");
     }
 
     @Test
@@ -112,12 +198,13 @@ class ApiSecurityAndWorkflowControllerTests {
                     }
                     """))
             .andExpect(status().isCreated())
-            .andExpect(jsonPath("$.status").value("AWAITING_RELEASE_APPROVAL"))
+            .andExpect(jsonPath("$.status").value("AWAITING_CHANGE_APPROVAL"))
             .andReturn()
             .getResponse()
             .getContentAsString();
 
         String workflowId = workflowJson.replaceAll(".*\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+        approveChangeGate(workflowId);
         mockMvc.perform(get("/api/workflows/" + workflowId + "/tasks")
                 .with(httpBasic("operator", "operator-pass")))
             .andExpect(status().isOk())
@@ -181,12 +268,13 @@ class ApiSecurityAndWorkflowControllerTests {
                     }
                     """))
             .andExpect(status().isCreated())
-            .andExpect(jsonPath("$.status").value("AWAITING_RELEASE_APPROVAL"))
+            .andExpect(jsonPath("$.status").value("AWAITING_CHANGE_APPROVAL"))
             .andReturn()
             .getResponse()
             .getContentAsString();
 
         String workflowId = workflowJson.replaceAll(".*\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+        approveChangeGate(workflowId);
         mockMvc.perform(get("/api/workflows/" + workflowId + "/validation-attempts")
                 .with(httpBasic("operator", "operator-pass")))
             .andExpect(status().isOk())
@@ -231,6 +319,79 @@ class ApiSecurityAndWorkflowControllerTests {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.items", hasSize(2)))
             .andExpect(jsonPath("$.items[?(@.name=='ambiguity-decision.json')].sha256").exists());
+    }
+
+    @Test
+    void ambiguousRequirementResumesAfterAuthenticatedClarification() throws Exception {
+        String workflowJson = mockMvc.perform(post("/api/workflows")
+                .with(httpBasic("operator", "operator-pass"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "scenarioKey": "ambiguous-requirement",
+                      "requirement": "Make links better."
+                    }
+                    """))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("AWAITING_CLARIFICATION"))
+            .andExpect(jsonPath("$.currentRevision").value(1))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+        String workflowId = JsonPath.read(workflowJson, "$.id");
+
+        mockMvc.perform(post("/api/workflows/" + workflowId + "/clarifications")
+                .with(httpBasic("operator", "operator-pass"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "questionId": "acceptance-and-scope",
+                      "answer": "Provide REST endpoints to create short URLs and redirect, persist records in PostgreSQL, require API key authentication and rate limiting, apply 30 day expiry, and expose UTC daily analytics."
+                    }
+                    """))
+            .andExpect(status().isAccepted())
+            .andExpect(jsonPath("$.message", containsString("revision 2")));
+
+        mockMvc.perform(get("/api/workflows/" + workflowId)
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("AWAITING_CHANGE_APPROVAL"))
+            .andExpect(jsonPath("$.currentRevision").value(2));
+
+        approveChangeGate(workflowId);
+
+        mockMvc.perform(get("/api/workflows/" + workflowId)
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("AWAITING_RELEASE_APPROVAL"))
+            .andExpect(jsonPath("$.currentRevision").value(2));
+
+        mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items[?(@.name=='clarified-requirement.txt')].sha256").exists())
+            .andExpect(jsonPath("$.items[?(@.name=='engineering-outcome.json')].sha256").exists());
+
+        String audit = mockMvc.perform(get("/api/workflows/" + workflowId + "/audit-events")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+        org.assertj.core.api.Assertions.assertThat(audit)
+            .contains("workflow.clarification-received")
+            .contains("workflow.revision-created");
+
+        mockMvc.perform(post("/api/workflows/" + workflowId + "/clarifications")
+                .with(httpBasic("operator", "operator-pass"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "questionId": "late",
+                      "answer": "too late, workflow already advanced"
+                    }
+                    """))
+            .andExpect(status().isConflict());
     }
 
     @Test
@@ -312,6 +473,7 @@ class ApiSecurityAndWorkflowControllerTests {
             .getContentAsString();
 
         String workflowId = JsonPath.read(workflowJson, "$.id");
+        approveChangeGate(workflowId);
         String outcomeJson = mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts/engineering-outcome.json")
                 .with(httpBasic("operator", "operator-pass")))
             .andExpect(status().isOk())
@@ -344,8 +506,9 @@ class ApiSecurityAndWorkflowControllerTests {
         mockMvc.perform(get("/api/workflows/" + workflowId + "/approvals")
                 .with(httpBasic("operator", "operator-pass")))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.items[0].gate").value("RELEASE"))
-            .andExpect(jsonPath("$.items[0].suppliedHashes").value(outcomeHash));
+            .andExpect(jsonPath("$.items[?(@.gate=='CHANGE')].decision").value("APPROVED"))
+            .andExpect(jsonPath("$.items[?(@.gate=='RELEASE')].decision").value("APPROVED"))
+            .andExpect(jsonPath("$.items[?(@.gate=='RELEASE')].suppliedHashes").value(outcomeHash));
     }
 
     @Test
@@ -364,6 +527,7 @@ class ApiSecurityAndWorkflowControllerTests {
             .getResponse()
             .getContentAsString();
         String workflowId = JsonPath.read(workflowJson, "$.id");
+        approveChangeGate(workflowId);
         String outcomeJson = mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts/engineering-outcome.json")
                 .with(httpBasic("operator", "operator-pass")))
             .andExpect(status().isOk())
@@ -409,8 +573,8 @@ class ApiSecurityAndWorkflowControllerTests {
             .getContentAsString();
 
         String workflowId = JsonPath.read(workflowJson, "$.id");
-        mockMvc.perform(post("/api/workflows/" + workflowId + "/approvals/release")
-                .with(httpBasic("release-approver", "release-pass"))
+        mockMvc.perform(post("/api/workflows/" + workflowId + "/approvals/change")
+                .with(httpBasic("change-approver", "change-pass"))
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
                     {
@@ -426,6 +590,94 @@ class ApiSecurityAndWorkflowControllerTests {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.items[0].decision").value("REJECTED"))
             .andExpect(jsonPath("$.items[0].valid").value(false));
+    }
+
+    @Test
+    void operatorSafeStopsWorkflowAndRecordsVerifiedRollback() throws Exception {
+        String json = mockMvc.perform(post("/api/workflows")
+                .with(httpBasic("operator", "operator-pass"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "scenarioKey": "brownfield-analytics",
+                      "requirement": "Add URL creation API and redirect endpoint with PostgreSQL storage, rate limiting, blocked host validation, expiry, retention cleanup, and UTC daily analytics."
+                    }
+                    """))
+            .andExpect(status().isCreated())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+        String workflowId = JsonPath.read(json, "$.id");
+        approveChangeGate(workflowId);
+
+        mockMvc.perform(post("/api/workflows/" + workflowId + "/safe-stop")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isAccepted())
+            .andExpect(jsonPath("$.message", containsString("SAFE_STOPPED")));
+
+        mockMvc.perform(get("/api/workflows/" + workflowId)
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("SAFE_STOPPED"));
+
+        mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items[?(@.name=='safe-stop-evidence.json')].sha256").exists());
+
+        String evidence = mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts/safe-stop-evidence.json")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+        org.assertj.core.api.Assertions.assertThat((String) JsonPath.read(evidence, "$.content"))
+            .contains("\"rollbackVerified\":true")
+            .contains("\"workspaceExisted\":true");
+
+        String audit = mockMvc.perform(get("/api/workflows/" + workflowId + "/audit-events")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+        org.assertj.core.api.Assertions.assertThat(audit).contains("workflow.safe-stopped");
+
+        mockMvc.perform(post("/api/workflows/" + workflowId + "/safe-stop")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isConflict());
+    }
+
+    @Test
+    void safeStopBeforeAnyMutationTransitionsWithoutWorkspaceRollback() throws Exception {
+        String json = mockMvc.perform(post("/api/workflows")
+                .with(httpBasic("operator", "operator-pass"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "scenarioKey": "greenfield-url-shortener",
+                      "requirement": "Build a URL shortener API with redirect endpoint, PostgreSQL persistence, rate limiting, blocked host validation, expiry, retention, and UTC analytics."
+                    }
+                    """))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("AWAITING_CHANGE_APPROVAL"))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+        String workflowId = JsonPath.read(json, "$.id");
+
+        mockMvc.perform(post("/api/workflows/" + workflowId + "/safe-stop")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isAccepted());
+
+        String evidence = mockMvc.perform(get("/api/workflows/" + workflowId + "/artifacts/safe-stop-evidence.json")
+                .with(httpBasic("operator", "operator-pass")))
+            .andExpect(status().isOk())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+        org.assertj.core.api.Assertions.assertThat((String) JsonPath.read(evidence, "$.content"))
+            .contains("\"workspaceExisted\":false");
     }
 
     @Test

@@ -22,6 +22,7 @@ import com.assessment.agentic.agents.TaskPlan;
 import com.assessment.agentic.agents.TestGenerationAgent;
 import com.assessment.agentic.persistence.ArtifactRecord;
 import com.assessment.agentic.persistence.RevisionRecord;
+import com.assessment.agentic.persistence.RevisionStatus;
 import com.assessment.agentic.persistence.TaskRecord;
 import com.assessment.agentic.persistence.TaskStatus;
 import com.assessment.agentic.persistence.WorkflowRecord;
@@ -30,6 +31,7 @@ import com.assessment.agentic.persistence.WorkflowStatus;
 import com.assessment.agentic.observability.WorkflowMetrics;
 import com.assessment.agentic.repository.IsolatedRepositoryService;
 import com.assessment.agentic.repository.PatchApplicationResult;
+import com.assessment.agentic.repository.RollbackResult;
 import com.assessment.agentic.validation.BuildValidationEvidence;
 import com.assessment.agentic.validation.FixedMavenValidationRunner;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -37,6 +39,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
@@ -102,7 +105,8 @@ public class WorkflowOrchestrator {
     @Transactional
     public void startRevision(WorkflowRecord workflow, RevisionRecord revision, String actor, String correlationId) {
         store.updateWorkflowStatus(workflow.id(), WorkflowStatus.RUNNING);
-        ExecutionContext context = new ExecutionContext(workflow.id().toString(), revision.revisionNumber(), workflow.originalRequirement(),
+        String requirementText = requirementFor(workflow, revision);
+        ExecutionContext context = new ExecutionContext(workflow.id().toString(), revision.revisionNumber(), requirementText,
             Map.of("scenarioKey", workflow.scenarioKey()));
         TaskRecord requirementTask = run("understand-requirement", AgentRole.REQUIREMENT_INTERPRETER, List.of(), workflow, revision, actor, correlationId,
             task -> requirementAgent.execute(task, context));
@@ -118,6 +122,100 @@ public class WorkflowOrchestrator {
             return;
         }
 
+        runDesignPhase(workflow, revision, ambiguityTask, actor, correlationId);
+    }
+
+    /**
+     * Accepts an authenticated clarification for a workflow that paused in {@code AWAITING_CLARIFICATION},
+     * opens a new workflow revision that preserves the original requirement plus the answer lineage,
+     * invalidates the superseded revision, and resumes orchestration from the start of the new revision.
+     */
+    @Transactional
+    public void submitClarification(UUID workflowId, String questionId, String answer, String actor, String correlationId) {
+        WorkflowRecord workflow = store.findWorkflow(workflowId)
+            .orElseThrow(() -> new IllegalArgumentException("Workflow not found."));
+        RevisionRecord priorRevision = store.findRevisionForWorkflowNumber(workflowId, workflow.currentRevision())
+            .orElseThrow(() -> new IllegalStateException("Active revision not found."));
+
+        store.createArtifact(workflowId, priorRevision.id(), null, "clarification-answer.json", "application/json",
+            write(Map.of("questionId", questionId, "answer", answer, "answeredBy", actor)),
+            write(Map.of("respondsToArtifact", "ambiguity-decision.json", "revision", priorRevision.revisionNumber())));
+        store.appendAuditEvent(workflowId, priorRevision.id(), null, "workflow.clarification-received", actor, correlationId,
+            write(Map.of("questionId", questionId)));
+
+        int nextRevisionNumber = priorRevision.revisionNumber() + 1;
+        store.markRevisionStatus(priorRevision.id(), RevisionStatus.INVALIDATED,
+            "Superseded by clarification revision " + nextRevisionNumber);
+
+        String clarifiedRequirement = workflow.originalRequirement()
+            + System.lineSeparator() + System.lineSeparator()
+            + "Clarification for '" + questionId + "': " + answer;
+        RevisionRecord newRevision = store.createRevision(workflowId, nextRevisionNumber, clarifiedRequirement, priorRevision.id());
+        store.createArtifact(workflowId, newRevision.id(), null, "clarified-requirement.txt", "text/plain",
+            clarifiedRequirement,
+            write(Map.of("parentRevision", priorRevision.revisionNumber(), "originalRequirementPreserved", true, "clarificationQuestionId", questionId)));
+        store.appendAuditEvent(workflowId, newRevision.id(), null, "workflow.revision-created", actor, correlationId,
+            write(Map.of("revision", nextRevisionNumber, "reason", "clarification", "parentRevision", priorRevision.revisionNumber())));
+
+        WorkflowRecord refreshed = store.findWorkflow(workflowId).orElseThrow();
+        startRevision(refreshed, newRevision, actor, correlationId);
+    }
+
+    /**
+     * Cancels a non-terminal workflow, restores the current-revision isolated workspace to its baseline,
+     * and records verified rollback evidence before transitioning to {@code SAFE_STOPPED}.
+     */
+    @Transactional
+    public void safeStop(UUID workflowId, String actor, String correlationId) {
+        WorkflowRecord workflow = store.findWorkflow(workflowId)
+            .orElseThrow(() -> new IllegalArgumentException("Workflow not found."));
+        if (isTerminal(workflow.status())) {
+            throw new IllegalStateException("Workflow is already in terminal state " + workflow.status() + ".");
+        }
+        RevisionRecord revision = store.findRevisionForWorkflowNumber(workflowId, workflow.currentRevision()).orElse(null);
+        RollbackResult rollback = isolatedRepositoryService.rollback(workflowId.toString(), workflow.currentRevision());
+        if (revision != null) {
+            store.createArtifact(workflowId, revision.id(), null, "safe-stop-evidence.json", "application/json",
+                write(Map.of(
+                    "previousStatus", workflow.status().name(),
+                    "workspaceExisted", rollback.workspaceExisted(),
+                    "rollbackVerified", rollback.verified(),
+                    "restoredFiles", rollback.restoredFiles(),
+                    "detail", rollback.detail()
+                )),
+                write(Map.of("requestedBy", actor)));
+        }
+        store.updateWorkflowStatus(workflowId, WorkflowStatus.SAFE_STOPPED);
+        workflowMetrics.workflowCompleted("safe_stopped");
+        if (rollback.workspaceExisted()) {
+            workflowMetrics.rollback(rollback.verified() ? "verified" : "unverified");
+        }
+        store.appendAuditEvent(workflowId, revision == null ? null : revision.id(), null, "workflow.safe-stopped", actor, correlationId,
+            write(Map.of("previousStatus", workflow.status().name(), "workspaceExisted", rollback.workspaceExisted(),
+                "rollbackVerified", rollback.verified())));
+    }
+
+    private boolean isTerminal(WorkflowStatus status) {
+        return status == WorkflowStatus.COMPLETED
+            || status == WorkflowStatus.FAILED
+            || status == WorkflowStatus.REJECTED
+            || status == WorkflowStatus.CANCELLED
+            || status == WorkflowStatus.SAFE_STOPPED;
+    }
+
+    private String requirementFor(WorkflowRecord workflow, RevisionRecord revision) {
+        return store.findArtifact(revision.id(), "clarified-requirement.txt")
+            .map(ArtifactRecord::content)
+            .orElse(workflow.originalRequirement());
+    }
+
+    /**
+     * Design phase: interpret, decompose, and publish the canonical {@code engineering-plan.json},
+     * then pause in {@code AWAITING_CHANGE_APPROVAL}. No repository mutation happens until an
+     * authenticated change approver supplies the exact current-revision plan hash.
+     */
+    private void runDesignPhase(WorkflowRecord workflow, RevisionRecord revision, TaskRecord ambiguityTask,
+        String actor, String correlationId) {
         TaskRecord planTask = run("decompose-tasks", AgentRole.PLANNER, List.of(ambiguityTask.taskKey()), workflow, revision, actor, correlationId,
             task -> plannerAgent.execute(task, contextWithArtifacts(workflow, revision)));
         TaskPlan plan = read(store.findArtifact(revision.id(), "task-plan.json").orElseThrow().content(), TaskPlan.class);
@@ -125,7 +223,31 @@ public class WorkflowOrchestrator {
             write(Map.of("requirementHash", revision.requirementHash(), "taskPlan", plan)),
             write(Map.of("canonical", true, "sourceArtifact", "task-plan.json")));
         createPlannedTasks(workflow, revision, plan);
-        run("analyze-repository", AgentRole.CODEBASE_ANALYST, List.of(planTask.taskKey()), workflow, revision, actor, correlationId,
+        String planHash = store.findArtifact(revision.id(), "engineering-plan.json").orElseThrow().sha256();
+        store.updateWorkflowStatus(workflow.id(), WorkflowStatus.AWAITING_CHANGE_APPROVAL);
+        workflowMetrics.workflowCompleted("awaiting_change_approval");
+        store.appendAuditEvent(workflow.id(), revision.id(), planTask.id(), "workflow.awaiting-change-approval", actor, correlationId,
+            write(Map.of("engineeringPlanHash", planHash, "requiredGate", "change")));
+    }
+
+    /**
+     * Resumes a workflow that was paused in {@code AWAITING_CHANGE_APPROVAL} once the change gate
+     * has recorded a valid, exact-evidence approval for the current-revision engineering plan.
+     */
+    @Transactional
+    public void resumeAfterChangeApproval(UUID workflowId, String actor, String correlationId) {
+        WorkflowRecord workflow = store.findWorkflow(workflowId)
+            .orElseThrow(() -> new IllegalArgumentException("Workflow not found."));
+        RevisionRecord revision = store.findRevisionForWorkflowNumber(workflowId, workflow.currentRevision())
+            .orElseThrow(() -> new IllegalStateException("Active revision not found."));
+        store.updateWorkflowStatus(workflowId, WorkflowStatus.RUNNING);
+        store.appendAuditEvent(workflowId, revision.id(), null, "workflow.change-approved-resumed", actor, correlationId,
+            "Exact-evidence change approval satisfied; resuming governed repository mutation.");
+        runBuildPhase(workflow, revision, actor, correlationId);
+    }
+
+    private void runBuildPhase(WorkflowRecord workflow, RevisionRecord revision, String actor, String correlationId) {
+        run("analyze-repository", AgentRole.CODEBASE_ANALYST, List.of("decompose-tasks"), workflow, revision, actor, correlationId,
             task -> repositoryAgent.execute(task, contextWithArtifacts(workflow, revision)));
         run("design-change", AgentRole.ARCHITECT, List.of("analyze-repository"), workflow, revision, actor, correlationId,
             task -> architectureAgent.execute(task, contextWithArtifacts(workflow, revision)));
@@ -222,13 +344,25 @@ public class WorkflowOrchestrator {
             workflowMetrics.taskCompleted(validationTask.taskType(), "succeeded", secondAttempt.durationMillis());
             store.appendAuditEvent(workflow.id(), revision.id(), validationTask.id(), "validation.revalidated", "VALIDATOR", correlationId, write(secondAttempt));
         } else {
+            RollbackResult rollback = isolatedRepositoryService.rollback(patchResult.workspacePath());
+            store.createArtifact(workflow.id(), revision.id(), repairTask.id(), "rollback-evidence.json", "application/json",
+                write(Map.of(
+                    "trigger", "repair-budget-exhausted",
+                    "workspaceExisted", rollback.workspaceExisted(),
+                    "verified", rollback.verified(),
+                    "restoredFiles", rollback.restoredFiles(),
+                    "restoredManifestHash", rollback.restoredManifestHash(),
+                    "baselineManifestHash", patchResult.baselineManifestHash(),
+                    "detail", rollback.detail()
+                )),
+                write(Map.of("producingTask", "repair-validation-failure")));
             store.updateTaskStatus(validationTask.id(), TaskStatus.FAILED);
             store.updateWorkflowStatus(workflow.id(), WorkflowStatus.FAILED);
             workflowMetrics.taskCompleted(validationTask.taskType(), "failed", secondAttempt.durationMillis());
-            workflowMetrics.rollback("required");
+            workflowMetrics.rollback(rollback.verified() ? "verified" : "unverified");
             workflowMetrics.workflowCompleted("failed");
-            store.appendAuditEvent(workflow.id(), revision.id(), repairTask.id(), "rollback.required", "VALIDATOR", correlationId,
-                "Repair budget exhausted; rollback will be implemented in the rollback checkpoint.");
+            store.appendAuditEvent(workflow.id(), revision.id(), repairTask.id(), "rollback.completed", "VALIDATOR", correlationId,
+                write(Map.of("verified", rollback.verified(), "restoredFiles", rollback.restoredFiles(), "detail", rollback.detail())));
         }
     }
 
@@ -357,7 +491,7 @@ public class WorkflowOrchestrator {
                 putRequirementDimensions(artifacts, artifact.content());
             }
         }
-        return new ExecutionContext(workflow.id().toString(), revision.revisionNumber(), workflow.originalRequirement(), artifacts);
+        return new ExecutionContext(workflow.id().toString(), revision.revisionNumber(), requirementFor(workflow, revision), artifacts);
     }
 
     private void putRequirementDimensions(Map<String, String> artifacts, String content) {

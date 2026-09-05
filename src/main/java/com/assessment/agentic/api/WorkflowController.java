@@ -139,9 +139,22 @@ public class WorkflowController {
 
     @PostMapping("/api/workflows/{workflowId}/clarifications")
     @PreAuthorize("hasRole('OPERATOR')")
-    ResponseEntity<ActionAcceptedResponse> clarify(@PathVariable("workflowId") UUID workflowId, @Valid @RequestBody ClarificationRequest request) {
-        requireWorkflow(workflowId);
-        return ResponseEntity.accepted().body(new ActionAcceptedResponse("clarification accepted for later orchestration checkpoint"));
+    ResponseEntity<ActionAcceptedResponse> clarify(
+        @PathVariable("workflowId") UUID workflowId,
+        @Valid @RequestBody ClarificationRequest request,
+        Principal principal
+    ) {
+        WorkflowRecord workflow = requireWorkflow(workflowId);
+        if (workflow.status() != WorkflowStatus.AWAITING_CLARIFICATION) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Workflow is not awaiting clarification (current status " + workflow.status() + ").");
+        }
+        orchestrator.submitClarification(workflowId, request.questionId(), request.answer(),
+            principal.getName(), "api-clarify-" + workflowId);
+        WorkflowRecord updated = store.findWorkflow(workflowId).orElseThrow();
+        return ResponseEntity.accepted().body(new ActionAcceptedResponse(
+            "clarification accepted; workflow advanced to revision " + updated.currentRevision()
+                + " with status " + updated.status() + "."));
     }
 
     @PostMapping("/api/workflows/{workflowId}/approvals/change")
@@ -153,7 +166,11 @@ public class WorkflowController {
         jakarta.servlet.http.HttpServletRequest servletRequest
     ) {
         WorkflowRecord workflow = requireWorkflow(workflowId);
+        boolean atChangeGate = workflow.status() == WorkflowStatus.AWAITING_CHANGE_APPROVAL;
         ApprovalRecord approval = recordApproval(workflow, "CHANGE", "ROLE_CHANGE_APPROVER", "engineering-plan.json", request, principal, servletRequest);
+        if (atChangeGate) {
+            orchestrator.resumeAfterChangeApproval(workflowId, principal.getName(), correlationId(servletRequest));
+        }
         return ResponseEntity.accepted().body(ApprovalResponse.from(approval));
     }
 
@@ -174,9 +191,28 @@ public class WorkflowController {
 
     @PostMapping("/api/workflows/{workflowId}/safe-stop")
     @PreAuthorize("hasRole('OPERATOR')")
-    ResponseEntity<ActionAcceptedResponse> safeStop(@PathVariable("workflowId") UUID workflowId) {
-        requireWorkflow(workflowId);
-        return ResponseEntity.accepted().body(new ActionAcceptedResponse("safe stop accepted for later orchestration checkpoint"));
+    ResponseEntity<ActionAcceptedResponse> safeStop(
+        @PathVariable("workflowId") UUID workflowId,
+        Principal principal,
+        jakarta.servlet.http.HttpServletRequest servletRequest
+    ) {
+        WorkflowRecord workflow = requireWorkflow(workflowId);
+        if (isTerminal(workflow.status())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Workflow is already in terminal state " + workflow.status() + ".");
+        }
+        orchestrator.safeStop(workflowId, principal.getName(), correlationId(servletRequest));
+        WorkflowRecord updated = store.findWorkflow(workflowId).orElseThrow();
+        return ResponseEntity.accepted().body(new ActionAcceptedResponse(
+            "safe stop completed; workflow status " + updated.status() + "."));
+    }
+
+    private boolean isTerminal(WorkflowStatus status) {
+        return status == WorkflowStatus.COMPLETED
+            || status == WorkflowStatus.FAILED
+            || status == WorkflowStatus.REJECTED
+            || status == WorkflowStatus.CANCELLED
+            || status == WorkflowStatus.SAFE_STOPPED;
     }
 
     @GetMapping("/api/workflows/{workflowId}/policies")
