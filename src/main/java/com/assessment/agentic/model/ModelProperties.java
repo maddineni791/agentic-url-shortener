@@ -65,7 +65,7 @@ public class ModelProperties {
     public static class OpenAi {
         private String baseUrl = "https://api.openai.com";
         private String apiKey = "";
-        private String model = "gpt-5.6-luna";
+        private String model = "gpt-4o-mini";
 
         public String getBaseUrl() {
             return baseUrl;

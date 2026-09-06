@@ -194,7 +194,7 @@ Key evidence artifacts:
 $env:AGENTIC_MODEL_PROVIDER = "openai"
 $env:OPENAI_API_KEY = "<api-key>"
 $env:OPENAI_BASE_URL = "https://api.openai.com"
-$env:OPENAI_MODEL = "gpt-5.6-luna"
+$env:OPENAI_MODEL = "gpt-4o-mini"
 ```
 
 The deterministic provider is the default and requires no API key. Both providers use the
